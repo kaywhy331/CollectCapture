@@ -1,0 +1,30 @@
+{
+  "name": "localclear",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Photo-first, local-selling assistant for clearing household items.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "pnpm@11.16.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "build:packages": "pnpm --filter @localclear/domain build && pnpm --filter @localclear/device-protocol build",
+    "dev": "pnpm --filter @localclear/api dev",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "security:dependencies": "pnpm run security:verify-patches && pnpm audit --prod",
+    "security:verify-patches": "node scripts/verify-patched-image-size.mjs",
+    "test": "pnpm run build:packages && pnpm -r --if-present run test",
+    "test:coverage": "pnpm -r --if-present run test:coverage",
+    "typecheck": "pnpm run build:packages && pnpm -r --if-present run typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "prettier": "^3.6.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

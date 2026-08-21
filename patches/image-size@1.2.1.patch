@@ -1,0 +1,51 @@
+diff --git a/dist/types/icns.js b/dist/types/icns.js
+--- a/dist/types/icns.js
++++ b/dist/types/icns.js
+@@ -15,6 +15,7 @@ const SIZE_HEADER = 4 + 4; // 8
+  * | 8      | n    | Icon data                                                        |
+  */
+ const ENTRY_LENGTH_OFFSET = 4; // MSB => BIG ENDIAN
++const ENTRY_HEADER_SIZE = 4 + 4; // 8
+ const ICON_TYPE_SIZE = {
+     ICON: 32,
+     'ICN#': 32,
+@@ -73,6 +74,12 @@ function getImageSize(type) {
+     const size = ICON_TYPE_SIZE[type];
+     return { width: size, height: size, type };
+ }
++function nextImageOffset(imageOffset, entryLength) {
++    if (entryLength < ENTRY_HEADER_SIZE) {
++        throw new TypeError('Invalid ICNS, entry length must be at least 8 bytes');
++    }
++    return imageOffset + entryLength;
++}
+ exports.ICNS = {
+     validate: (input) => (0, utils_1.toUTF8String)(input, 0, 4) === 'icns',
+     calculate(input) {
+@@ -82,6 +89,6 @@ exports.ICNS = {
+         let imageHeader = readImageHeader(input, imageOffset);
+         let imageSize = getImageSize(imageHeader[0]);
+-        imageOffset += imageHeader[1];
++        imageOffset = nextImageOffset(imageOffset, imageHeader[1]);
+         if (imageOffset === fileLength)
+             return imageSize;
+         const result = {
+@@ -94,6 +101,6 @@ exports.ICNS = {
+             imageHeader = readImageHeader(input, imageOffset);
+             imageSize = getImageSize(imageHeader[0]);
+-            imageOffset += imageHeader[1];
++            imageOffset = nextImageOffset(imageOffset, imageHeader[1]);
+             result.images.push(imageSize);
+         }
+         return result;
+diff --git a/dist/types/utils.js b/dist/types/utils.js
+--- a/dist/types/utils.js
++++ b/dist/types/utils.js
+@@ -54,5 +54,7 @@ function readBox(input, offset) {
+         return;
+     const boxSize = (0, exports.readUInt32BE)(input, offset);
++    if (boxSize < 8)
++        return;
+     if (input.length - offset < boxSize)
+         return;
+     return {

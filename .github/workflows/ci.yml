@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  database:
+    name: PostgreSQL migration and RLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Create disposable Supabase schemas
+        run: psql --file supabase/tests/bootstrap.sql
+
+      - name: Apply production migration
+        run: psql --file supabase/migrations/202608200001_initial_schema.sql
+
+      - name: Verify tenant isolation and immutable records
+        run: psql --file supabase/tests/rls.sql
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Exercise the production repository
+        env:
+          DATABASE_TEST_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          pnpm run build:packages
+          pnpm --filter @localclear/api exec vitest run test/postgres-repository.test.ts
+
+  typescript:
+    name: TypeScript, tests, and builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      EXPO_NO_TELEMETRY: "1"
+      EXPO_PUBLIC_API_URL: https://api.example.invalid
+      EXPO_PUBLIC_SUPABASE_URL: https://project.example.invalid
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ci-anon-key-placeholder-at-least-20-characters # gitleaks:allow
+      NEXT_PUBLIC_API_URL: https://api.example.invalid
+      NEXT_PUBLIC_SUPABASE_URL: https://project.example.invalid
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-anon-key-placeholder-at-least-20-characters # gitleaks:allow
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Typecheck all surfaces
+        run: pnpm typecheck
+
+      - name: Run automated tests
+        run: pnpm test
+
+      - name: Build deployable web and service artifacts
+        run: pnpm build
+
+  seller-hub:
+    name: Seller Hub Android 11+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up pinned Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.4.1"
+          cache-provider: basic
+
+      - name: Install Android API 37
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
+
+      - name: Test and assemble Seller Hub
+        working-directory: apps/seller-hub
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
