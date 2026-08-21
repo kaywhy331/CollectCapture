@@ -128,6 +128,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "12266719"
+
       - name: Set up pinned Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
