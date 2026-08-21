@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "LocalClear",
+    "slug": "localclear",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "localclear",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.localclear.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "LocalClear uses the camera to photograph items you choose to clear.",
+        "NSPhotoLibraryUsageDescription": "LocalClear lets you select item photos from your library.",
+        "NSLocationWhenInUseUsageDescription": "LocalClear uses an approximate area only when you choose to set local selling distance."
+      }
+    },
+    "android": {
+      "package": "com.localclear.mobile",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow LocalClear to photograph items you choose to clear."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow LocalClear to use item photos you select."
+        }
+      ],
+      ["expo-secure-store", { "configureAndroidBackup": true }],
+      "expo-notifications"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

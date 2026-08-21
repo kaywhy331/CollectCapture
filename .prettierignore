@@ -1,0 +1,9 @@
+PRD/
+pnpm-lock.yaml
+node_modules/
+dist/
+coverage/
+.expo/
+.next/
+.env.example
+supabase/config.toml
