@@ -1,4 +1,9 @@
 import { buildApp } from "./app.js";
+import {
+  OpenAICardRecognitionProvider,
+  StatelessCardLookupService,
+  TcgcsvCardCatalogProvider,
+} from "./card-lookups.js";
 import { LocalClearApplication } from "./application.js";
 import { SupabaseAccountLifecycleProvider } from "./account-lifecycle.js";
 import { JwksTokenVerifier, SharedSecretTokenVerifier } from "./auth.js";
@@ -101,14 +106,57 @@ const tokenVerifier =
         issuer,
         audience: "authenticated",
       });
+const cardLookupIntegration =
+  config.COLLECTFOLIO_APP_URL &&
+  config.COLLECTFOLIO_SUPABASE_URL &&
+  config.COLLECTFOLIO_CATALOG_URL &&
+  config.OPENAI_API_KEY
+    ? (() => {
+        const collectFolioIssuer = new URL(
+          "/auth/v1",
+          config.COLLECTFOLIO_SUPABASE_URL,
+        )
+          .toString()
+          .replace(/\/$/, "");
+        return {
+          tokenVerifier: new JwksTokenVerifier({
+            jwksUrl: new URL(
+              config.COLLECTFOLIO_SUPABASE_JWKS_URL ??
+                `${collectFolioIssuer}/.well-known/jwks.json`,
+            ),
+            issuer: collectFolioIssuer,
+            audience: "authenticated",
+          }),
+          service: new StatelessCardLookupService(
+            new OpenAICardRecognitionProvider({
+              apiKey: config.OPENAI_API_KEY,
+              model: config.OPENAI_MODEL,
+            }),
+            new TcgcsvCardCatalogProvider({
+              baseUrl: config.COLLECTFOLIO_CATALOG_URL,
+            }),
+          ),
+        };
+      })()
+    : null;
 const app = await buildApp({
   repository,
   application,
   tokenVerifier,
+  ...(cardLookupIntegration
+    ? {
+        cardLookupTokenVerifier: cardLookupIntegration.tokenVerifier,
+        cardLookupService: cardLookupIntegration.service,
+      }
+    : {}),
   environment: config.NODE_ENV === "production" ? "production" : "internal",
-  allowedOrigins: [config.PUBLIC_APP_URL, config.PUBLIC_ADMIN_URL].filter(
-    (value): value is string => Boolean(value),
-  ),
+  allowedOrigins: [
+    config.PUBLIC_APP_URL,
+    config.PUBLIC_ADMIN_URL,
+    config.COLLECTFOLIO_APP_URL
+      ? new URL(config.COLLECTFOLIO_APP_URL).origin
+      : undefined,
+  ].filter((value): value is string => Boolean(value)),
   logger: {
     level: config.LOG_LEVEL,
     redact: {

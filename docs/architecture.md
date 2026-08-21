@@ -14,6 +14,7 @@ LocalClear uses a pnpm monorepo with four independently deployable surfaces:
 ## Trust boundaries
 
 - The main app authenticates with Supabase. Household row-level security scopes cloud records.
+- The optional CollectFolio card-lookup route authenticates against a separately configured CollectFolio Supabase issuer/JWKS. It does not accept the main application's tokens as a fallback, and its exact browser origin is independently allowlisted.
 - Item media is private and addressed as `<household UUID>/<item UUID>/<asset>`; device downloads use short-lived signed URLs.
 - The backend sends only canonical P-256 ECDSA-signed, expiring, nonce-bound commands from a fixed action allow-list. Every command snapshots and binds the marketplace app version as well as user, household, device, item, platform, connector, and listing version.
 - A paired device creates and retains its private key in Android Keystore. Only its public key and health are stored in the backend.
@@ -32,6 +33,8 @@ LocalClear uses a pnpm monorepo with four independently deployable surfaces:
 7. A verified platform ID or URL creates/updates the platform listing.
 8. Closing an item creates capable delist/mark-sold jobs plus one consolidated task for manual exceptions.
 
+The CollectFolio lookup lane is isolated from that item lifecycle: CollectFolio sends one browser-reencoded crop and bearer token, the API obtains structured visible-card evidence, forwards the bearer to CollectFolio's private TCGCSV catalog, and returns unselected identity suggestions. It creates no item, listing, media object, or database row. The crop is held only for the request and external recognition call; response storage is disabled at the recognition provider, while the provider's configured retention/data controls remain an external trust boundary.
+
 Server-side API/import jobs are claimed with bounded leases by a horizontally safe dispatcher. Android jobs are pulled only by the paired device, and only signed device receipts may advance them. User routes can resume or cancel a job but cannot forge successful transitions. Notifications use a separately leased outbox with bounded retry.
 
 ## Persistence invariants
@@ -45,6 +48,7 @@ Server-side API/import jobs are claimed with bounded leases by a horizontally sa
 - Composite foreign keys bind every child record to the same household as its parent; a foreign object ID cannot be combined with an attacker-controlled household ID.
 - Outcome records retain price, destination, days-to-clear, and terminal clearing path.
 - No database table contains marketplace credential or session material.
+- No CollectFolio lookup crop, query, bearer token, or recognition result is written to the LocalClear/CollectCapture data model.
 
 Authenticated Supabase clients have household-scoped read access plus narrowly scoped self-profile and private-media operations. All governed business mutations flow through the API service role, where state, approval, capability, and audit checks cannot be bypassed by a direct client write. The migration and RLS suite run against stock PostgreSQL in CI.
 

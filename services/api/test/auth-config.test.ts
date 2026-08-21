@@ -34,6 +34,70 @@ describe("production authentication configuration", () => {
     expect(config.SUPABASE_JWT_SECRET).toBeUndefined();
   });
 
+  it("accepts an independently verified CollectFolio authentication issuer", () => {
+    const config = readConfig({
+      ...productionEnvironment,
+      COLLECTFOLIO_APP_URL: "https://folio.example.test",
+      COLLECTFOLIO_SUPABASE_URL: "https://folio-project.example.test",
+      COLLECTFOLIO_CATALOG_URL: "https://catalog.example.test",
+    });
+    expect(config.COLLECTFOLIO_SUPABASE_URL).toBe(
+      "https://folio-project.example.test",
+    );
+    expect(config.COLLECTFOLIO_CATALOG_URL).toBe(
+      "https://catalog.example.test",
+    );
+  });
+
+  it("rejects a CollectFolio JWKS override without its issuer URL", () => {
+    expect(() =>
+      readConfig({
+        ...productionEnvironment,
+        COLLECTFOLIO_SUPABASE_JWKS_URL:
+          "https://folio-project.example.test/custom-jwks.json",
+      }),
+    ).toThrow("CollectFolio Supabase URL");
+  });
+
+  it("rejects a partially configured CollectFolio card lookup integration", () => {
+    expect(() =>
+      readConfig({
+        ...productionEnvironment,
+        COLLECTFOLIO_APP_URL: "https://folio.example.test",
+      }),
+    ).toThrow("origin, issuer, and catalog URL must be configured together");
+  });
+
+  it("requires a secure exact CollectFolio browser origin", () => {
+    expect(() =>
+      readConfig({
+        ...productionEnvironment,
+        COLLECTFOLIO_APP_URL: "https://folio.example.test/app",
+        COLLECTFOLIO_SUPABASE_URL: "https://folio-project.example.test",
+        COLLECTFOLIO_CATALOG_URL: "https://catalog.example.test",
+      }),
+    ).toThrow("exact origin");
+    expect(() =>
+      readConfig({
+        ...productionEnvironment,
+        COLLECTFOLIO_APP_URL: "http://folio.example.test",
+        COLLECTFOLIO_SUPABASE_URL: "https://folio-project.example.test",
+        COLLECTFOLIO_CATALOG_URL: "https://catalog.example.test",
+      }),
+    ).toThrow("HTTPS outside localhost");
+  });
+
+  it("permits loopback CollectFolio integration URLs for local development", () => {
+    const config = readConfig({
+      ...productionEnvironment,
+      NODE_ENV: "development",
+      COLLECTFOLIO_APP_URL: "http://localhost:4173",
+      COLLECTFOLIO_SUPABASE_URL: "http://127.0.0.1:54321",
+      COLLECTFOLIO_CATALOG_URL: "http://localhost:8787",
+    });
+    expect(config.COLLECTFOLIO_APP_URL).toBe("http://localhost:4173");
+  });
+
   it("rejects legacy shared-secret verification in production", () => {
     expect(() =>
       readConfig({

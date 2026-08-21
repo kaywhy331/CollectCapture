@@ -1,6 +1,6 @@
 # LocalClear threat model
 
-Status: engineering baseline for independent security review. Scope: mobile app, API, Supabase data plane, signed command channel, Seller Hub, admin dashboard, and connector definitions.
+Status: engineering baseline for independent security review. Scope: mobile app, API, Supabase data plane, signed command channel, Seller Hub, admin dashboard, connector definitions, and the optional CollectFolio card-lookup boundary.
 
 ## Protected assets
 
@@ -10,20 +10,22 @@ Status: engineering baseline for independent security review. Scope: mobile app,
 - Canonical listings, buyer excerpts, meetup details, price floors, and outcomes
 - Connector definitions, approval evidence, feature switches, and audit history
 - Publishing command integrity, freshness, scope, and idempotency
+- CollectFolio crop confidentiality, bearer-token separation, and catalog-identity integrity
 
 Marketplace passwords, cookies, refresh tokens, and session databases are deliberately not cloud assets because they must never leave the official marketplace apps on the Seller Hub.
 
 ## Trust boundaries and threats
 
-| Boundary                     | Principal threats                                                         | Required controls                                                                                                                              | Verification evidence                              |
-| ---------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| User → mobile/API            | Account takeover, cross-household access, forged object IDs               | OAuth/email auth, short-lived tokens, household RLS, ownership checks, rate limits                                                             | Auth integration tests and RLS policy tests        |
-| Mobile → private media       | EXIF address leak, public object access, unauthorized sharing             | Client/server EXIF stripping, private bucket, household path policy, short-lived signed URLs, optional redaction                               | Media pipeline tests and storage-policy tests      |
-| API → Seller Hub             | Forged/altered/expired/replayed/cross-device job                          | P-256 ECDSA signature, canonical payload, expiry, nonce, household/device/item/platform/app-version scope, idempotency key                     | Command protocol test vectors and device tests     |
-| Seller Hub → official app    | Arbitrary control, credential capture, CAPTCHA bypass, unintended publish | Fixed action allow-list, deterministic versioned connector, supported-version gate, login privacy mode, explicit user initiation, pause states | Android instrumentation and connector canary tests |
-| Admin → production connector | Unauthorized enablement, erased history, excessive support access         | MFA/SSO, least privilege, two-person release workflow, append-only changes, reason/consent/time-bound grants                                   | Access review and audit tests                      |
-| Buyer content → AI/user      | Prompt injection, scams, address disclosure, rules bypass                 | Treat messages as untrusted data, redact excerpts, fixed response policy, price/trade/delivery enforcement, explicit send/address approval     | Adversarial buyer-message test suite               |
-| Dependencies/build → release | Malicious dependency, leaked secret, unsigned artifact                    | Lockfile policy, dependency/secret scanning, isolated CI, signed builds, SBOM                                                                  | CI release-gate evidence                           |
+| Boundary                     | Principal threats                                                                                                          | Required controls                                                                                                                                   | Verification evidence                                               |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| User → mobile/API            | Account takeover, cross-household access, forged object IDs                                                                | OAuth/email auth, short-lived tokens, household RLS, ownership checks, rate limits                                                                  | Auth integration tests and RLS policy tests                         |
+| CollectFolio → lookup API    | Full-photo/metadata leak, wrong-issuer token acceptance, token/body logging, oversized resource use, forged exact identity | Canvas-reencoded crop only, dedicated issuer/JWKS, redacted logs, strict media/schema/response bounds, timeouts/rate limit, suggestion-only results | Card-lookup domain, API, auth-config, and browser integration tests |
+| Mobile → private media       | EXIF address leak, public object access, unauthorized sharing                                                              | Client/server EXIF stripping, private bucket, household path policy, short-lived signed URLs, optional redaction                                    | Media pipeline tests and storage-policy tests                       |
+| API → Seller Hub             | Forged/altered/expired/replayed/cross-device job                                                                           | P-256 ECDSA signature, canonical payload, expiry, nonce, household/device/item/platform/app-version scope, idempotency key                          | Command protocol test vectors and device tests                      |
+| Seller Hub → official app    | Arbitrary control, credential capture, CAPTCHA bypass, unintended publish                                                  | Fixed action allow-list, deterministic versioned connector, supported-version gate, login privacy mode, explicit user initiation, pause states      | Android instrumentation and connector canary tests                  |
+| Admin → production connector | Unauthorized enablement, erased history, excessive support access                                                          | MFA/SSO, least privilege, two-person release workflow, append-only changes, reason/consent/time-bound grants                                        | Access review and audit tests                                       |
+| Buyer content → AI/user      | Prompt injection, scams, address disclosure, rules bypass                                                                  | Treat messages as untrusted data, redact excerpts, fixed response policy, price/trade/delivery enforcement, explicit send/address approval          | Adversarial buyer-message test suite                                |
+| Dependencies/build → release | Malicious dependency, leaked secret, unsigned artifact                                                                     | Lockfile policy, dependency/secret scanning, isolated CI, signed builds, SBOM                                                                       | CI release-gate evidence                                            |
 
 ## Abuse cases
 
@@ -35,12 +37,14 @@ Marketplace passwords, cookies, refresh tokens, and session databases are delibe
 6. A buyer asks for verification codes, remote payment, or an exact address. The response engine warns and requires explicit user action.
 7. An image contains GPS EXIF or a visible address. External publish is blocked until metadata removal and the chosen redaction decision complete.
 8. A device is revoked during a job. Key revocation and job cancellation prevent later execution; local cache deletion is requested.
+9. A caller presents a valid token from the main CollectCapture issuer to the CollectFolio lookup route. The dedicated CollectFolio verifier rejects it; there is no verifier fallback.
+10. A provider or catalog response tries to claim an exact printing. The strict contract permits only a `likely` suggestion, and CollectFolio still requires collector selection and separate confirmation.
 
 ## Logging and diagnostics
 
 Allowed: object IDs, connector/app version, state duration, structured failure code, retry count, challenge type, confirmation method, policy state, coarse device health.
 
-Prohibited: passwords, session tokens, cookies, full private messages, clipboard contents, password-field pixels, unredacted addresses, and diagnostic screenshots without explicit consent. Login privacy mode disables capture entirely.
+Prohibited: passwords, session tokens, authorization headers, request bodies or CollectFolio crop data URLs, cookies, full private messages, clipboard contents, password-field pixels, unredacted addresses, and diagnostic screenshots without explicit consent. Login privacy mode disables capture entirely.
 
 ## Retention and deletion
 
@@ -48,6 +52,7 @@ Prohibited: passwords, session tokens, cookies, full private messages, clipboard
 - Diagnostic screenshots are opt-in, redacted, short-lived, and access-audited.
 - Account deletion revokes device keys, cancels active jobs, deletes cloud records according to approved retention policy, requests local-cache deletion, and records completion.
 - Audit and legal-retention exceptions must be documented without retaining marketplace credentials or unnecessary message content.
+- CollectFolio lookup crops are request-scoped and are not written to application persistence or logs. External recognition processing follows the configured provider's reviewed data controls and must remain disclosed separately.
 
 ## Release gate
 
