@@ -8,6 +8,7 @@ export interface AuthPrincipal {
   userId: string;
   email: string | null;
   roles: string[];
+  authenticationAssuranceLevel?: "aal1" | "aal2" | null;
 }
 
 declare module "fastify" {
@@ -84,7 +85,9 @@ function principalFromPayload(payload: JWTPayload): AuthPrincipal {
           (role): role is string => typeof role === "string",
         )
       : [];
-  return { userId: payload.sub, email, roles };
+  const authenticationAssuranceLevel =
+    payload.aal === "aal1" || payload.aal === "aal2" ? payload.aal : null;
+  return { userId: payload.sub, email, roles, authenticationAssuranceLevel };
 }
 
 export class SharedSecretTokenVerifier implements TokenVerifier {

@@ -24,6 +24,7 @@ import {
 import {
   createAuthenticationHook,
   createDeviceAuthenticationHook,
+  type AuthPrincipal,
   type TokenVerifier,
 } from "./auth.js";
 import {
@@ -1037,14 +1038,14 @@ export async function buildApp(
     }));
 
     protectedRoutes.get("/v1/admin/operations", async (request) => {
-      requireOperationsRole(request.principal.roles);
+      requireOperationsRole(request.principal, options.environment);
       return application.getOperationsDashboard();
     });
 
     protectedRoutes.patch(
       "/v1/admin/connectors/:connectorId",
       async (request) => {
-        requireAdminRole(request.principal.roles);
+        requireAdminRole(request.principal, options.environment);
         const { connectorId } = AdminConnectorParamsSchema.parse(
           request.params,
         );
@@ -1060,7 +1061,7 @@ export async function buildApp(
     );
 
     protectedRoutes.patch("/v1/admin/feature-flags/:key", async (request) => {
-      requireAdminRole(request.principal.roles);
+      requireAdminRole(request.principal, options.environment);
       const { key } = AdminFeatureFlagParamsSchema.parse(request.params);
       const input = AdminFeatureFlagUpdateRequestSchema.parse(request.body);
       return {
@@ -1073,14 +1074,14 @@ export async function buildApp(
     });
 
     protectedRoutes.get("/v1/admin/releases", async (request) => {
-      requireOperationsRole(request.principal.roles);
+      requireOperationsRole(request.principal, options.environment);
       return {
         releases: await options.repository.listProductionReleases(100),
       };
     });
 
     protectedRoutes.post("/v1/admin/releases", async (request, reply) => {
-      requireAdminRole(request.principal.roles);
+      requireAdminRole(request.principal, options.environment);
       const input = CreateProductionReleaseRequestSchema.parse(request.body);
       const release = await application.createProductionRelease(
         request.principal.userId,
@@ -1092,7 +1093,7 @@ export async function buildApp(
     protectedRoutes.post(
       "/v1/admin/releases/:releaseId/submit",
       async (request) => {
-        requireAdminRole(request.principal.roles);
+        requireAdminRole(request.principal, options.environment);
         const { releaseId } = ProductionReleaseParamsSchema.parse(
           request.params,
         );
@@ -1108,7 +1109,7 @@ export async function buildApp(
     protectedRoutes.post(
       "/v1/admin/releases/:releaseId/review",
       async (request) => {
-        requireAdminRole(request.principal.roles);
+        requireAdminRole(request.principal, options.environment);
         const { releaseId } = ProductionReleaseParamsSchema.parse(
           request.params,
         );
@@ -1124,7 +1125,7 @@ export async function buildApp(
     );
 
     protectedRoutes.get("/v1/admin/support-grants", async (request) => {
-      requireOperationsRole(request.principal.roles);
+      requireOperationsRole(request.principal, options.environment);
       return {
         grants: await application.listMyActiveSupportGrants(
           request.principal.userId,
@@ -1135,7 +1136,7 @@ export async function buildApp(
     protectedRoutes.get(
       "/v1/admin/support-grants/:grantId/session",
       async (request) => {
-        requireOperationsRole(request.principal.roles);
+        requireOperationsRole(request.principal, options.environment);
         const { grantId } = AdminSupportGrantParamsSchema.parse(request.params);
         return application.getSupportSession(request.principal.userId, grantId);
       },
@@ -1155,22 +1156,48 @@ export async function buildApp(
   return app;
 }
 
-function requireOperationsRole(roles: readonly string[]): void {
-  if (!roles.some((role) => role === "admin" || role === "operator")) {
+function requireOperationsRole(
+  principal: AuthPrincipal,
+  environment: ConnectorEnvironment | undefined,
+): void {
+  if (
+    !principal.roles.some((role) => role === "admin" || role === "operator")
+  ) {
     throw new ApplicationError(
       403,
       "admin_forbidden",
       "Operations access is required",
     );
   }
+  requireOperationsMfa(principal, environment);
 }
 
-function requireAdminRole(roles: readonly string[]): void {
-  if (!roles.includes("admin")) {
+function requireAdminRole(
+  principal: AuthPrincipal,
+  environment: ConnectorEnvironment | undefined,
+): void {
+  if (!principal.roles.includes("admin")) {
     throw new ApplicationError(
       403,
       "admin_forbidden",
       "Administrator access is required",
+    );
+  }
+  requireOperationsMfa(principal, environment);
+}
+
+function requireOperationsMfa(
+  principal: AuthPrincipal,
+  environment: ConnectorEnvironment | undefined,
+): void {
+  if (
+    environment === "production" &&
+    principal.authenticationAssuranceLevel !== "aal2"
+  ) {
+    throw new ApplicationError(
+      403,
+      "admin_mfa_required",
+      "Multi-factor authentication is required for operations access",
     );
   }
 }

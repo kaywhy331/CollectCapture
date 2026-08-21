@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   ItemEnrichmentOutputSchema,
   assertEnrichmentEvidenceBelongsToItem,
+  combineRestrictedScreens,
   restrictedScreenFromSignals,
+  restrictedScreenFromText,
   type ItemEnrichmentOutput,
 } from "../src/index.js";
 
@@ -126,5 +128,31 @@ describe("item intelligence contracts", () => {
         },
       ]).status,
     ).toBe("blocked");
+  });
+
+  it("derives restricted-item decisions from server-owned text screening", () => {
+    expect(restrictedScreenFromText(["Pair of collectible handguns"])).toEqual({
+      status: "blocked",
+      reasons: ["Possible firearm"],
+    });
+    expect(restrictedScreenFromText(["Set of vintage kitchen knives"])).toEqual(
+      { status: "review", reasons: ["Possible weapon"] },
+    );
+    expect(restrictedScreenFromText(["Oak side table", null])).toEqual({
+      status: "clear",
+      reasons: [],
+    });
+  });
+
+  it("combines screens at the strictest level and de-duplicates reasons", () => {
+    expect(
+      combineRestrictedScreens(
+        { status: "review", reasons: ["Manual review", "Repeated"] },
+        { status: "blocked", reasons: ["Repeated", "Policy block"] },
+      ),
+    ).toEqual({
+      status: "blocked",
+      reasons: ["Manual review", "Repeated", "Policy block"],
+    });
   });
 });

@@ -11,14 +11,14 @@ Status meanings:
 
 ## Accounts and household preferences
 
-| ID     | Status   | Evidence and boundary                                                                                                                                                                |
-| ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ACC-01 | Partial  | Expo implements Apple, Google, and email-link Supabase Auth flows; provider-console registration, signed app credentials, and production redirect validation remain deployment work. |
-| ACC-02 | Verified | One household profile is implemented, with a future-ready `household_members` relation and household-scoped API/RLS authorization.                                                   |
-| ACC-03 | Verified | Onboarding, strict contracts, API persistence, SQL constraints, and edit UI cover ZIP, radius, exchange preferences, availability, meetup locations, and price rules.                |
-| ACC-04 | Verified | Only user-facing payment wording is modeled; there is no payment credential, account, or transaction integration.                                                                    |
-| ACC-05 | Verified | Household default offer percentage and versioned item-specific minimum prices are validated and enforced in pricing and buyer-response logic.                                        |
-| ACC-06 | Verified | Export and deletion endpoints revoke devices, cancel jobs, delete private media/data/identity, issue a non-identifying receipt, and are covered by an end-to-end API test.           |
+| ID     | Status   | Evidence and boundary                                                                                                                                                                                                                                                 |
+| ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ACC-01 | Partial  | Expo implements PKCE Apple, Google, and email-link Supabase Auth flows, while the API requires asymmetric Supabase JWKS verification in production; provider-console registration, signed app credentials, and production redirect validation remain deployment work. |
+| ACC-02 | Verified | One household profile is implemented, with a future-ready `household_members` relation and household-scoped API/RLS authorization.                                                                                                                                    |
+| ACC-03 | Verified | Onboarding, strict contracts, API persistence, SQL constraints, and edit UI cover ZIP, radius, exchange preferences, availability, meetup locations, and price rules.                                                                                                 |
+| ACC-04 | Verified | Only user-facing payment wording is modeled; there is no payment credential, account, or transaction integration.                                                                                                                                                     |
+| ACC-05 | Verified | Household default offer percentage and versioned item-specific minimum prices are validated and enforced in pricing and buyer-response logic.                                                                                                                         |
+| ACC-06 | Verified | Export and deletion endpoints revoke devices, cancel jobs, delete private media/data/identity, issue a non-identifying receipt, and are covered by an end-to-end API test.                                                                                            |
 
 ## Seller Hub
 
@@ -41,34 +41,34 @@ Status meanings:
 
 ## Photo capture and media
 
-| ID     | Status   | Evidence and boundary                                                                                                                                                                                                   |
-| ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CAP-01 | Verified | Expo supports camera capture and multi-select from the image library.                                                                                                                                                   |
-| CAP-02 | Verified | Mobile and strict API/domain contracts enforce 1–12 images; boundary tests cover 0, 1, 12, and 13.                                                                                                                      |
-| CAP-03 | Verified | Continuous batch mode keeps the camera session active, and an API test persists 25 items in one batch. Field usability remains a completion gate.                                                                       |
-| CAP-04 | Partial  | The multimodal provider assesses blur, lighting, glare, and framing and the review UI surfaces results; calibrated device/benchmark accuracy is not yet evidenced.                                                      |
-| CAP-05 | Verified | Enrichment returns bounded label/model/damage/scale/accessory suggestions and the review UI displays them.                                                                                                              |
-| CAP-06 | Partial  | Capture normalizes orientation through native processing, bounds resolution, and lightly recompresses without generative edits; content-aware auto-crop and exposure correction still need a validated native pipeline. |
-| CAP-07 | Partial  | Every upload is JPEG re-encoded without requested EXIF, publishing hard-blocks an unsanitized flag, and tests cover the gate; a real-device GPS EXIF fixture test remains.                                              |
-| CAP-08 | Verified | Vision assessment flags faces/documents/addresses/plates, and users can crop/replace or explicitly clear a warning before publish. Replacements delete the old private object.                                          |
-| CAP-09 | Verified | AI lead-photo scores deterministically reorder media and select exactly one lead while preserving stable tie order.                                                                                                     |
+| ID     | Status   | Evidence and boundary                                                                                                                                                                                                                                                                                    |
+| ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CAP-01 | Verified | Expo supports camera capture and multi-select from the image library.                                                                                                                                                                                                                                    |
+| CAP-02 | Verified | Mobile and strict API/domain contracts enforce 1–12 images; boundary tests cover 0, 1, 12, and 13.                                                                                                                                                                                                       |
+| CAP-03 | Verified | Continuous batch mode keeps the camera session active, and an API test persists 25 items in one batch. Field usability remains a completion gate.                                                                                                                                                        |
+| CAP-04 | Partial  | The multimodal provider assesses blur, lighting, glare, and framing and the review UI surfaces results; calibrated device/benchmark accuracy is not yet evidenced.                                                                                                                                       |
+| CAP-05 | Verified | Enrichment returns bounded label/model/damage/scale/accessory suggestions and the review UI displays them.                                                                                                                                                                                               |
+| CAP-06 | Partial  | Capture normalizes orientation through native processing, bounds resolution, and lightly recompresses without generative edits; content-aware auto-crop and exposure correction still need a validated native pipeline.                                                                                  |
+| CAP-07 | Partial  | Mobile JPEG re-encoding removes requested EXIF, and the API independently verifies private object bytes, SHA-256, media type, and JPEG/PNG/WebP GPS metadata before accepting capture or replacement. Synthetic container tests cover the fail-closed gate; a real-device GPS EXIF fixture test remains. |
+| CAP-08 | Verified | Vision assessment flags faces/documents/addresses/plates, and users can crop/replace or explicitly clear a warning before publish. Replacements delete the old private object.                                                                                                                           |
+| CAP-09 | Verified | AI lead-photo scores deterministically reorder media and select exactly one lead while preserving stable tie order.                                                                                                                                                                                      |
 
 ## AI identification and listing generation
 
-| ID    | Status   | Evidence and boundary                                                                                                                                           |
-| ----- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AI-01 | Verified | The OpenAI Responses adapter returns strict item type, category, brand, and model suggestions with evidence.                                                    |
-| AI-02 | Verified | The multimodal prompt and schema extract visible label/model/serial/dimension/packaging text conservatively with per-fact evidence.                             |
-| AI-03 | Verified | Expo scans UPC/EAN codes during capture, and the enrichment input also asks the model to transcribe visible barcodes.                                           |
-| AI-04 | Verified | Confidence and bounded alternative matches are required by schema and rendered during review.                                                                   |
-| AI-05 | Verified | Structured output permits at most three material unresolved questions; domain tests reject a fourth.                                                            |
-| AI-06 | Verified | The provider generates title, description, condition summary, details, and specifications, which the user edits and approves into an immutable listing version. |
-| AI-07 | Verified | The connector mapper produces versioned platform titles, descriptions, categories, and fields with length/required-field enforcement.                           |
-| AI-08 | Verified | Every approved specification carries image-derived, catalog-derived, user-confirmed, or inferred provenance plus confidence.                                    |
-| AI-09 | Verified | Inferred or below-threshold model-specific facts are excluded and unresolved specifications block publishing.                                                   |
-| AI-10 | Verified | Restricted/recalled/unsafe/age-restricted signals produce review or block states, and every publish path requires a clear screen.                               |
-| AI-11 | Verified | A tested clearing engine recommends sell, bundle, giveaway, donate, recycle, or discard based on value, effort, condition, and safety.                          |
-| AI-12 | Verified | A tested related-item scorer suggests bundles from category, brand/model, title, and active inventory.                                                          |
+| ID    | Status   | Evidence and boundary                                                                                                                                                                                                 |
+| ----- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AI-01 | Verified | The OpenAI Responses adapter returns strict item type, category, brand, and model suggestions with evidence.                                                                                                          |
+| AI-02 | Verified | The multimodal prompt and schema extract visible label/model/serial/dimension/packaging text conservatively with per-fact evidence.                                                                                   |
+| AI-03 | Verified | Expo scans UPC/EAN codes during capture, and the enrichment input also asks the model to transcribe visible barcodes.                                                                                                 |
+| AI-04 | Verified | Confidence and bounded alternative matches are required by schema and rendered during review.                                                                                                                         |
+| AI-05 | Verified | Structured output permits at most three material unresolved questions; domain tests reject a fourth.                                                                                                                  |
+| AI-06 | Verified | The provider generates title, description, condition summary, details, and specifications, which the user edits and approves into an immutable listing version.                                                       |
+| AI-07 | Verified | The connector mapper produces versioned platform titles, descriptions, categories, and fields with length/required-field enforcement.                                                                                 |
+| AI-08 | Verified | Every approved specification carries image-derived, catalog-derived, user-confirmed, or inferred provenance plus confidence.                                                                                          |
+| AI-09 | Verified | Inferred or below-threshold model-specific facts are excluded and unresolved specifications block publishing.                                                                                                         |
+| AI-10 | Verified | Server-owned text rules and current-media model signals derive restricted/recalled/unsafe/age-regulated review or block states; client-supplied clearance is rejected and every publish path rechecks a clear screen. |
+| AI-11 | Verified | A tested clearing engine recommends sell, bundle, giveaway, donate, recycle, or discard based on value, effort, condition, and safety.                                                                                |
+| AI-12 | Verified | A tested related-item scorer suggests bundles from category, brand/model, title, and active inventory.                                                                                                                |
 
 The PRD’s 500-item accuracy, OCR, copy-acceptance, and pricing-quality thresholds remain external benchmark gates even though all product pathways above are implemented.
 
@@ -178,14 +178,14 @@ The PRD’s 500-item accuracy, OCR, copy-acceptance, and pricing-quality thresho
 
 ## Admin and operations
 
-| ID     | Status   | Evidence and boundary                                                                                                                                                                       |
-| ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OPS-01 | Verified | The role-gated Next.js dashboard groups jobs by platform, connector version, marketplace app version, state, success rate, and failure type.                                                |
-| OPS-02 | Verified | Audited connector and feature kill switches take effect without an app release.                                                                                                             |
-| OPS-03 | Partial  | Upload requires an active, scoped, time-limited grant plus exact user consent and `redacted/privacyScanPassed` assertions; an independently validated screenshot redaction scanner remains. |
-| OPS-04 | Verified | Connector/feature changes, releases, approvals, deployments, rollbacks, grants, diagnostics, and audits persist; critical histories are SQL-immutable.                                      |
-| OPS-05 | Verified | Policy status, approval evidence URL, review date, production method, canary ID, and owner are governed inputs.                                                                             |
-| OPS-06 | Verified | The operations API raises failure-spike, account-challenge, and duplicate-rate alerts from the last 24 hours.                                                                               |
+| ID     | Status   | Evidence and boundary                                                                                                                                                                                           |
+| ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OPS-01 | Verified | The role-gated Next.js dashboard groups jobs by platform, connector version, marketplace app version, state, success rate, and failure type; production operations routes additionally require Supabase `aal2`. |
+| OPS-02 | Verified | Audited connector and feature kill switches take effect without an app release.                                                                                                                                 |
+| OPS-03 | Partial  | Upload requires an active, scoped, time-limited grant plus exact user consent and `redacted/privacyScanPassed` assertions; an independently validated screenshot redaction scanner remains.                     |
+| OPS-04 | Verified | Connector/feature changes, releases, approvals, deployments, rollbacks, grants, diagnostics, and audits persist; critical histories are SQL-immutable.                                                          |
+| OPS-05 | Verified | Policy status, approval evidence URL, review date, production method, canary ID, and owner are governed inputs.                                                                                                 |
+| OPS-06 | Verified | The operations API raises failure-spike, account-challenge, and duplicate-rate alerts from the last 24 hours.                                                                                                   |
 
 ## Technical and release completion
 

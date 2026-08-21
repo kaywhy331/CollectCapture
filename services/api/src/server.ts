@@ -1,7 +1,7 @@
 import { buildApp } from "./app.js";
 import { LocalClearApplication } from "./application.js";
 import { SupabaseAccountLifecycleProvider } from "./account-lifecycle.js";
-import { SharedSecretTokenVerifier } from "./auth.js";
+import { JwksTokenVerifier, SharedSecretTokenVerifier } from "./auth.js";
 import { readConfig } from "./config.js";
 import { SignedDeviceCommandFactory } from "./device-commands.js";
 import { OpenAIIntelligenceProvider } from "./intelligence.js";
@@ -65,6 +65,9 @@ const deviceCommands =
 const application = new LocalClearApplication(repository, {
   environment: config.NODE_ENV === "production" ? "production" : "internal",
   apiBaseUrl: config.PUBLIC_API_URL,
+  ...(mediaReadUrlProvider
+    ? { mediaVerificationProvider: mediaReadUrlProvider }
+    : {}),
   ...intelligence,
   ...deviceCommands,
   ...(accountLifecycleProvider
@@ -84,14 +87,24 @@ await seedMissingFeatureFlags(repository);
 const issuer = new URL("/auth/v1", config.SUPABASE_URL)
   .toString()
   .replace(/\/$/, "");
+const tokenVerifier =
+  config.SUPABASE_JWT_VERIFICATION_MODE === "jwks"
+    ? new JwksTokenVerifier({
+        jwksUrl: new URL(
+          config.SUPABASE_JWKS_URL ?? `${issuer}/.well-known/jwks.json`,
+        ),
+        issuer,
+        audience: "authenticated",
+      })
+    : new SharedSecretTokenVerifier({
+        secret: config.SUPABASE_JWT_SECRET!,
+        issuer,
+        audience: "authenticated",
+      });
 const app = await buildApp({
   repository,
   application,
-  tokenVerifier: new SharedSecretTokenVerifier({
-    secret: config.SUPABASE_JWT_SECRET,
-    issuer,
-    audience: "authenticated",
-  }),
+  tokenVerifier,
   environment: config.NODE_ENV === "production" ? "production" : "internal",
   allowedOrigins: [config.PUBLIC_APP_URL, config.PUBLIC_ADMIN_URL].filter(
     (value): value is string => Boolean(value),

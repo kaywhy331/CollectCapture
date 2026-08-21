@@ -26,6 +26,18 @@ insert into public.items (
   ('20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'Alice chair', 'Furniture', 'good', '{}', 0.9, 'sell', 'draft'),
   ('20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000002', 'Bob chair', 'Furniture', 'good', '{}', 0.9, 'sell', 'draft');
 
+insert into public.media_assets (
+  id, household_id, item_id, storage_path, content_sha256, media_type,
+  display_order, redaction_state, source, exif_location_stripped,
+  retention_state
+) values (
+  '21000000-0000-0000-0000-000000000001',
+  '10000000-0000-0000-0000-000000000001',
+  '20000000-0000-0000-0000-000000000001',
+  '10000000-0000-0000-0000-000000000001/item/accepted.jpg',
+  repeat('a', 64), 'image/jpeg', 0, 'pending_scan', 'camera', true, 'permanent'
+);
+
 insert into public.audit_events (
   id, household_id, actor_id, actor_type, action, object_type, object_id
 ) values (
@@ -123,9 +135,26 @@ begin
   end if;
   raise notice 'PASS self profile update';
 
-  insert into storage.objects (bucket_id, name)
-  values ('item-media', '10000000-0000-0000-0000-000000000001/item/photo.jpg');
+  insert into storage.objects (bucket_id, name) values
+    ('item-media', '10000000-0000-0000-0000-000000000001/item/accepted.jpg'),
+    ('item-media', '10000000-0000-0000-0000-000000000001/item/unreferenced.jpg');
   raise notice 'PASS household storage insert';
+
+  delete from storage.objects
+  where name = '10000000-0000-0000-0000-000000000001/item/unreferenced.jpg';
+  get diagnostics changed_count = row_count;
+  if changed_count <> 1 then
+    raise exception 'unreferenced upload cleanup changed % rows', changed_count;
+  end if;
+  raise notice 'PASS unreferenced upload cleanup';
+
+  delete from storage.objects
+  where name = '10000000-0000-0000-0000-000000000001/item/accepted.jpg';
+  get diagnostics changed_count = row_count;
+  if changed_count <> 0 then
+    raise exception 'accepted media deletion unexpectedly changed % rows', changed_count;
+  end if;
+  raise notice 'PASS accepted media deletion denied';
 
   begin
     insert into storage.objects (bucket_id, name)

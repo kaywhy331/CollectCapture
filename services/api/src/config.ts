@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+const OptionalUrlSchema = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.string().url().optional(),
+);
+
 const EnvironmentSchema = z
   .object({
     NODE_ENV: z
@@ -20,7 +26,9 @@ const EnvironmentSchema = z
       .default(60_000),
     DATABASE_URL: z.string().url(),
     SUPABASE_URL: z.string().url(),
-    SUPABASE_JWT_SECRET: z.string().min(32),
+    SUPABASE_JWT_VERIFICATION_MODE: z.enum(["jwks", "legacy"]).default("jwks"),
+    SUPABASE_JWKS_URL: OptionalUrlSchema,
+    SUPABASE_JWT_SECRET: z.string().min(32).optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(32).optional(),
     OPENAI_API_KEY: z.string().min(20).optional(),
     OPENAI_MODEL: z.string().trim().min(1).default("gpt-5.6"),
@@ -34,6 +42,26 @@ const EnvironmentSchema = z
   })
   .strip()
   .superRefine((value, context) => {
+    if (
+      value.SUPABASE_JWT_VERIFICATION_MODE === "legacy" &&
+      !value.SUPABASE_JWT_SECRET
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["SUPABASE_JWT_SECRET"],
+        message: "Legacy JWT verification requires the shared secret",
+      });
+    }
+    if (
+      value.NODE_ENV === "production" &&
+      value.SUPABASE_JWT_VERIFICATION_MODE !== "jwks"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["SUPABASE_JWT_VERIFICATION_MODE"],
+        message: "Production requires asymmetric JWKS token verification",
+      });
+    }
     if (
       value.NODE_ENV === "production" &&
       !value.DEVICE_COMMAND_SIGNING_PRIVATE_KEY

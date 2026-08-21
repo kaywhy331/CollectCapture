@@ -681,12 +681,20 @@ export class MemoryRepository implements Repository {
   async getLatestItemEnrichment(
     householdId: string,
     itemId: string,
+    mediaFingerprint?: string,
   ): Promise<ItemEnrichment | null> {
-    const enrichment = [...this.#itemEnrichments.values()]
-      .filter(
-        (value) => value.householdId === householdId && value.itemId === itemId,
-      )
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+    const enrichment = [...this.#itemEnrichments.values()].reduce<
+      ItemEnrichment | undefined
+    >((latest, value) => {
+      if (
+        value.householdId !== householdId ||
+        value.itemId !== itemId ||
+        (mediaFingerprint && value.mediaFingerprint !== mediaFingerprint)
+      ) {
+        return latest;
+      }
+      return !latest || value.createdAt >= latest.createdAt ? value : latest;
+    }, undefined);
     return enrichment ? structuredClone(enrichment) : null;
   }
 

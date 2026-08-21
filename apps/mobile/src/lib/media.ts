@@ -15,8 +15,6 @@ export interface UploadedPhoto {
   mediaType: "image/jpeg";
   source: LocalPhoto["source"];
   qualityIssues: Array<"incomplete_framing">;
-  redactionState: "not_needed";
-  exifLocationStripped: true;
 }
 
 export async function sanitizeAndUploadPhotos(
@@ -65,8 +63,6 @@ export async function sanitizeAndUploadPhotos(
           sanitized.width < 720 || sanitized.height < 720
             ? ["incomplete_framing"]
             : [],
-        redactionState: "not_needed",
-        exifLocationStripped: true,
       });
     }
     return results;

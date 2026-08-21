@@ -209,7 +209,7 @@ create table public.media_assets (
   quality_issues text[] not null default '{}',
   redaction_state text not null check (
     redaction_state in (
-      'not_needed', 'suggested', 'reviewed_not_needed', 'approved', 'applied'
+      'pending_scan', 'not_needed', 'suggested', 'reviewed_not_needed', 'approved', 'applied'
     )
   ),
   source text not null check (source in ('camera', 'library', 'import')),
@@ -219,6 +219,7 @@ create table public.media_assets (
   ),
   delete_after timestamptz,
   created_at timestamptz not null default now(),
+  unique (household_id, storage_path),
   unique (item_id, display_order)
 );
 
@@ -229,6 +230,7 @@ create table public.item_enrichments (
   household_id uuid not null references public.households(id) on delete cascade,
   item_id uuid not null references public.items(id) on delete cascade,
   input_fingerprint char(64) not null check (input_fingerprint ~ '^[a-f0-9]{64}$'),
+  media_fingerprint char(64) not null check (media_fingerprint ~ '^[a-f0-9]{64}$'),
   provider text not null,
   model text not null,
   output jsonb not null,
@@ -925,4 +927,8 @@ create policy item_media_household_delete on storage.objects
   using (
     bucket_id = 'item-media'
     and public.is_household_member(((storage.foldername(name))[1])::uuid)
+    and not exists (
+      select 1 from public.media_assets
+      where media_assets.storage_path = storage.objects.name
+    )
   );

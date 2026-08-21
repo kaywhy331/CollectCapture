@@ -29,6 +29,7 @@ import {
   assertSpecificationsPublishable,
   createBuyerTaskDraft,
   createPlatformListingVariant,
+  combineRestrictedScreens,
   approveProductionRelease,
   deployProductionRelease,
   deriveItemStatus,
@@ -42,6 +43,8 @@ import {
   planInventoryClosure,
   publishingIdempotencyKey,
   recommendClearingLane,
+  restrictedScreenFromSignals,
+  restrictedScreenFromText,
   rejectProductionRelease,
   ReleaseGateError,
   rollbackProductionRelease,
@@ -132,6 +135,12 @@ import {
   type MediaReadUrlProvider,
 } from "./intelligence.js";
 import {
+  MediaVerificationError,
+  UnavailableMediaVerificationProvider,
+  type MediaVerificationProvider,
+  type VerifiedMedia,
+} from "./media-verification.js";
+import {
   recordDuplicateBlock,
   recordPublishConfirmation,
   recordPublishingJobQueued,
@@ -156,6 +165,7 @@ export interface ApplicationOptions {
   createId?: () => string;
   intelligenceProvider?: IntelligenceProvider;
   mediaReadUrlProvider?: MediaReadUrlProvider;
+  mediaVerificationProvider?: MediaVerificationProvider;
   deviceCommandFactory?: DeviceCommandFactory;
   accountIdentityProvider?: AccountIdentityProvider;
   mediaLifecycleProvider?: MediaLifecycleProvider;
@@ -196,6 +206,7 @@ export class LocalClearApplication {
   readonly #createId: () => string;
   readonly #intelligenceProvider: IntelligenceProvider;
   readonly #mediaReadUrlProvider: MediaReadUrlProvider | null;
+  readonly #mediaVerificationProvider: MediaVerificationProvider;
   readonly #deviceCommandFactory: DeviceCommandFactory;
   readonly #accountIdentityProvider: AccountIdentityProvider;
   readonly #mediaLifecycleProvider: MediaLifecycleProvider;
@@ -210,6 +221,9 @@ export class LocalClearApplication {
     this.#intelligenceProvider =
       options.intelligenceProvider ?? new UnavailableIntelligenceProvider();
     this.#mediaReadUrlProvider = options.mediaReadUrlProvider ?? null;
+    this.#mediaVerificationProvider =
+      options.mediaVerificationProvider ??
+      new UnavailableMediaVerificationProvider();
     this.#deviceCommandFactory =
       options.deviceCommandFactory ?? new UnavailableDeviceCommandFactory();
     this.#accountIdentityProvider =
@@ -803,7 +817,7 @@ export class LocalClearApplication {
     request: CapturedItemInput,
   ): Promise<CaptureResult> {
     await this.#requireMembership(userId, householdId);
-    const item = this.#buildCapturedItem(
+    const item = await this.#buildCapturedItem(
       householdId,
       CapturedItemInputSchema.parse(request),
     );
@@ -834,7 +848,7 @@ export class LocalClearApplication {
     const built: StoredItem[] = [];
     const results: CaptureResult[] = [];
     for (const request of requests) {
-      const item = this.#buildCapturedItem(
+      const item = await this.#buildCapturedItem(
         householdId,
         CapturedItemInputSchema.parse(request),
       );
@@ -909,7 +923,11 @@ export class LocalClearApplication {
     const [latestListing, platformListings, enrichment] = await Promise.all([
       this.#repository.getLatestListing(itemId),
       this.#repository.listPlatformListings(itemId),
-      this.#repository.getLatestItemEnrichment(householdId, itemId),
+      this.#repository.getLatestItemEnrichment(
+        householdId,
+        itemId,
+        itemMediaFingerprint(item),
+      ),
     ]);
     return { item, latestListing, platformListings, enrichment };
   }
@@ -996,27 +1014,8 @@ export class LocalClearApplication {
       );
     }
 
-    const inputFingerprint = createHash("sha256")
-      .update(
-        JSON.stringify({
-          item: {
-            title: item.title,
-            category: item.category,
-            brand: item.brand,
-            model: item.model,
-            condition: item.condition,
-            accessories: item.accessories,
-            defects: item.defects,
-            barcode: item.barcode,
-          },
-          media: item.media.map((media) => ({
-            id: media.id,
-            sha256: media.contentSha256,
-            order: media.order,
-          })),
-        }),
-      )
-      .digest("hex");
+    const inputFingerprint = enrichmentInputFingerprint(item);
+    const mediaFingerprint = itemMediaFingerprint(item);
     const cached = await this.#repository.getItemEnrichmentByFingerprint(
       householdId,
       itemId,
@@ -1062,6 +1061,7 @@ export class LocalClearApplication {
         householdId,
         itemId,
         inputFingerprint,
+        mediaFingerprint,
         provider: this.#intelligenceProvider.providerName,
         model: this.#intelligenceProvider.model,
         output,
@@ -1121,6 +1121,7 @@ export class LocalClearApplication {
     const enrichment = await this.#repository.getLatestItemEnrichment(
       householdId,
       itemId,
+      itemMediaFingerprint(item),
     );
     if (!enrichment) throw notFound("Item enrichment");
     return enrichment;
@@ -1170,11 +1171,27 @@ export class LocalClearApplication {
         "The replacement must be a newly edited image",
       );
     }
-    if (!request.replacement.exifLocationStripped) {
+    let verifiedReplacement: VerifiedMedia;
+    try {
+      verifiedReplacement = await this.#mediaVerificationProvider.verify({
+        storagePath: request.replacement.storagePath,
+        expectedSha256: request.replacement.contentSha256,
+        declaredMediaType: request.replacement.mediaType,
+      });
+    } catch (error) {
+      if (error instanceof MediaVerificationError) {
+        const statusCode =
+          error.code === "media_unavailable"
+            ? 503
+            : error.code === "media_too_large"
+              ? 413
+              : 422;
+        throw new ApplicationError(statusCode, error.code, error.message);
+      }
       throw new ApplicationError(
-        409,
-        "media_not_sanitized",
-        "Remove photo location metadata before replacing this image",
+        502,
+        "media_verification_failed",
+        "Replacement media could not be verified",
       );
     }
     try {
@@ -1197,12 +1214,14 @@ export class LocalClearApplication {
           ? {
               ...asset,
               storagePath: request.replacement.storagePath,
-              contentSha256: request.replacement.contentSha256,
-              mediaType: request.replacement.mediaType,
+              id: this.#createId(),
+              contentSha256: verifiedReplacement.contentSha256,
+              mediaType: verifiedReplacement.mediaType,
               qualityIssues: request.replacement.qualityIssues,
-              redactionState: "applied",
+              redactionState: "pending_scan",
               source: request.replacement.source,
-              exifLocationStripped: true,
+              exifLocationStripped: verifiedReplacement.exifLocationStripped,
+              createdAt: now,
             }
           : asset,
       ),
@@ -1217,6 +1236,8 @@ export class LocalClearApplication {
       {
         oldObjectDeleted: true,
         replacementHashChanged: true,
+        serverVerified: true,
+        privacyRescanRequired: true,
         storagePathsInAudit: false,
       },
     );
@@ -1272,6 +1293,36 @@ export class LocalClearApplication {
     const item = await this.#repository.getItem(householdId, itemId);
     if (!item) throw notFound("Item");
     const input = CreateListingRequestSchema.parse(request);
+    const mediaFingerprint = itemMediaFingerprint(item);
+    const enrichment = await this.#repository.getLatestItemEnrichment(
+      householdId,
+      itemId,
+      mediaFingerprint,
+    );
+    if (!enrichment || enrichment.mediaFingerprint !== mediaFingerprint) {
+      throw new ApplicationError(
+        409,
+        "item_screening_required",
+        "Run photo analysis on the current media before creating a listing",
+      );
+    }
+    const restrictedScreen = screenRestrictedListing(enrichment, [
+      item.title,
+      item.category,
+      item.brand,
+      item.model,
+      ...item.accessories,
+      ...item.defects,
+      input.title,
+      input.description,
+      input.conditionSummary,
+      JSON.stringify(input.specifications),
+      input.itemReview?.category,
+      input.itemReview?.brand,
+      input.itemReview?.model,
+      ...(input.itemReview?.accessories ?? []),
+      ...(input.itemReview?.defects ?? []),
+    ]);
     const previous = await this.#repository.getLatestListing(itemId);
     const now = this.#now().toISOString();
     const listing = CanonicalListingSchema.parse({
@@ -1289,8 +1340,8 @@ export class LocalClearApplication {
       exchangeOptions: input.exchangeOptions,
       paymentWording: input.paymentWording,
       negotiationRules: input.negotiationRules,
-      restrictedItemStatus: input.restrictedItemStatus,
-      restrictedItemReasons: input.restrictedItemReasons,
+      restrictedItemStatus: restrictedScreen.status,
+      restrictedItemReasons: restrictedScreen.reasons,
       approvedAt: input.approve ? now : null,
       createdAt: now,
     });
@@ -1352,6 +1403,7 @@ export class LocalClearApplication {
         version: saved.version,
         approved: input.approve,
         itemReviewed: Boolean(input.itemReview),
+        restrictedItemStatus: saved.restrictedItemStatus,
       },
     );
     return saved;
@@ -1375,6 +1427,31 @@ export class LocalClearApplication {
       input.listingVersion,
     );
     if (!listing) throw notFound("Listing version");
+    const mediaFingerprint = itemMediaFingerprint(item);
+    const enrichment = await this.#repository.getLatestItemEnrichment(
+      householdId,
+      itemId,
+      mediaFingerprint,
+    );
+    if (!enrichment || enrichment.mediaFingerprint !== mediaFingerprint) {
+      throw new ApplicationError(
+        409,
+        "item_screening_required",
+        "Run photo analysis on the current media before publishing",
+      );
+    }
+    const currentRestrictedScreen = screenRestrictedListing(enrichment, [
+      item.title,
+      item.category,
+      item.brand,
+      item.model,
+      ...item.accessories,
+      ...item.defects,
+      listing.title,
+      listing.description,
+      listing.conditionSummary,
+      JSON.stringify(listing.specifications),
+    ]);
     if (!listing.approvedAt) {
       throw new ApplicationError(
         409,
@@ -1382,12 +1459,22 @@ export class LocalClearApplication {
         "Approve the listing before publishing",
       );
     }
-    if (listing.restrictedItemStatus !== "clear") {
+    if (
+      listing.restrictedItemStatus !== "clear" ||
+      currentRestrictedScreen.status !== "clear"
+    ) {
       throw new ApplicationError(
         409,
         "item_blocked",
         "Restricted-item screening must be clear before publishing",
-        { reasons: listing.restrictedItemReasons },
+        {
+          reasons: [
+            ...new Set([
+              ...listing.restrictedItemReasons,
+              ...currentRestrictedScreen.reasons,
+            ]),
+          ],
+        },
       );
     }
     if (item.media.some((asset) => !asset.exifLocationStripped)) {
@@ -1398,7 +1485,7 @@ export class LocalClearApplication {
       );
     }
     const pendingPrivacyReview = item.media.filter((asset) =>
-      ["suggested", "approved"].includes(asset.redactionState),
+      ["pending_scan", "suggested", "approved"].includes(asset.redactionState),
     );
     if (pendingPrivacyReview.length > 0) {
       throw new ApplicationError(
@@ -2189,11 +2276,37 @@ export class LocalClearApplication {
     if (!item) throw notFound("Item");
     if (!listing) throw notFound("Listing version");
     if (!household) throw notFound("Household");
-    if (!listing.approvedAt || listing.restrictedItemStatus !== "clear") {
+    const mediaFingerprint = itemMediaFingerprint(item);
+    const enrichment = await this.#repository.getLatestItemEnrichment(
+      householdId,
+      itemId,
+      mediaFingerprint,
+    );
+    const currentRestrictedScreen = enrichment
+      ? screenRestrictedListing(enrichment, [
+          item.title,
+          item.category,
+          item.brand,
+          item.model,
+          ...item.accessories,
+          ...item.defects,
+          listing.title,
+          listing.description,
+          listing.conditionSummary,
+          JSON.stringify(listing.specifications),
+        ])
+      : null;
+    if (
+      !listing.approvedAt ||
+      listing.restrictedItemStatus !== "clear" ||
+      !enrichment ||
+      enrichment.mediaFingerprint !== mediaFingerprint ||
+      currentRestrictedScreen?.status !== "clear"
+    ) {
       throw new ApplicationError(
         409,
         "listing_not_publishable",
-        "Approve and clear the edited listing before updating platforms",
+        "Approve, rescan, and clear the edited listing before updating platforms",
       );
     }
     const jobs: PublishingJob[] = [];
@@ -3638,16 +3751,47 @@ export class LocalClearApplication {
     return this.#repository.createSellerDevice(device);
   }
 
-  #buildCapturedItem(
+  async #buildCapturedItem(
     householdId: string,
     input: CapturedItemInput,
-  ): StoredItem {
+  ): Promise<StoredItem> {
     for (const photo of input.photos) {
-      if (!photo.storagePath.startsWith(`${householdId}/`)) {
+      if (
+        !photo.storagePath.startsWith(`${householdId}/`) ||
+        photo.storagePath.includes("..") ||
+        photo.storagePath.includes("\\")
+      ) {
         throw new ApplicationError(
           400,
           "invalid_media_path",
           "Every media path must be scoped to the household",
+        );
+      }
+    }
+    const verifiedPhotos = [] as VerifiedMedia[];
+    for (const photo of input.photos) {
+      try {
+        verifiedPhotos.push(
+          await this.#mediaVerificationProvider.verify({
+            storagePath: photo.storagePath,
+            expectedSha256: photo.contentSha256,
+            declaredMediaType: photo.mediaType,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof MediaVerificationError) {
+          const statusCode =
+            error.code === "media_unavailable"
+              ? 503
+              : error.code === "media_too_large"
+                ? 413
+                : 422;
+          throw new ApplicationError(statusCode, error.code, error.message);
+        }
+        throw new ApplicationError(
+          502,
+          "media_verification_failed",
+          "Uploaded media could not be verified",
         );
       }
     }
@@ -3683,14 +3827,14 @@ export class LocalClearApplication {
         id: this.#createId(),
         itemId,
         storagePath: photo.storagePath,
-        contentSha256: photo.contentSha256,
-        mediaType: photo.mediaType,
+        contentSha256: verifiedPhotos[index]!.contentSha256,
+        mediaType: verifiedPhotos[index]!.mediaType,
         order: index,
         isLead: index === 0,
         qualityIssues: photo.qualityIssues,
-        redactionState: photo.redactionState,
+        redactionState: "pending_scan",
         source: photo.source,
-        exifLocationStripped: photo.exifLocationStripped,
+        exifLocationStripped: verifiedPhotos[index]!.exifLocationStripped,
         retentionState: "permanent",
         createdAt: now,
       })),
@@ -4081,7 +4225,9 @@ export class LocalClearApplication {
           redactionState:
             assessment?.redactionSuggested && !preservePrivacyDecision
               ? ("suggested" as const)
-              : asset.redactionState,
+              : assessment && asset.redactionState === "pending_scan"
+                ? ("not_needed" as const)
+                : asset.redactionState,
         };
       })
       .sort((left, right) => left.order - right.order);
@@ -4153,6 +4299,52 @@ export class LocalClearApplication {
     });
     await this.#repository.createAuditEvent(event, householdId);
   }
+}
+
+function itemMediaFingerprint(item: StoredItem): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        item.media
+          .map((media) => ({
+            id: media.id,
+            sha256: media.contentSha256,
+            mediaType: media.mediaType,
+          }))
+          .sort((left, right) => left.id.localeCompare(right.id)),
+      ),
+    )
+    .digest("hex");
+}
+
+function enrichmentInputFingerprint(item: StoredItem): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        item: {
+          title: item.title,
+          category: item.category,
+          brand: item.brand,
+          model: item.model,
+          condition: item.condition,
+          accessories: item.accessories,
+          defects: item.defects,
+          barcode: item.barcode,
+        },
+        mediaFingerprint: itemMediaFingerprint(item),
+      }),
+    )
+    .digest("hex");
+}
+
+function screenRestrictedListing(
+  enrichment: ItemEnrichment,
+  textValues: readonly (string | null | undefined)[],
+) {
+  return combineRestrictedScreens(
+    restrictedScreenFromSignals(enrichment.output.restrictedSignals),
+    restrictedScreenFromText(textValues),
+  );
 }
 
 function startOfMonthInTimezone(now: Date, timezone: string): string {

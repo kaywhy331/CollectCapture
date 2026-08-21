@@ -256,6 +256,7 @@ export const MediaAssetSchema = z
     isLead: z.boolean(),
     qualityIssues: z.array(MediaQualityIssueSchema),
     redactionState: z.enum([
+      "pending_scan",
       "not_needed",
       "suggested",
       "reviewed_not_needed",

@@ -134,6 +134,7 @@ export const ItemEnrichmentSchema = z
     householdId: EntityIdSchema,
     itemId: EntityIdSchema,
     inputFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    mediaFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
     provider: z.string().trim().min(1).max(80),
     model: z.string().trim().min(1).max(160),
     output: ItemEnrichmentOutputSchema,
@@ -165,6 +166,62 @@ export function restrictedScreenFromSignals(
     };
   }
   return { status: "clear", reasons: [] };
+}
+
+const BLOCKED_TEXT_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\b(?:firearms?|handguns?|rifles?|shotguns?|guns?)\b/i, "Possible firearm"],
+  [/\b(?:ammunition|ammo)\b/i, "Possible ammunition"],
+  [/\b(?:explosives?|bombs?|grenades?)\b/i, "Possible explosive"],
+  [
+    /\b(?:fentanyl|cocaine|heroin|methamphetamine)\b/i,
+    "Possible controlled substance",
+  ],
+  [/\brecall(?:ed)?\b/i, "Possible recalled item"],
+];
+
+const REVIEW_TEXT_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\b(?:kn(?:ife|ives)|swords?|crossbows?)\b/i, "Possible weapon"],
+  [/\b(?:alcohol|tobacco|cigars?|vapes?)\b/i, "Age-regulated product"],
+  [/\b(?:medications?|prescriptions?|pesticides?)\b/i, "Regulated product"],
+  [/\b(?:car\s*seats?|cribs?|bassinets?)\b/i, "Child-safety product"],
+  [/\b(?:counterfeits?|replicas?)\b/i, "Authenticity review required"],
+];
+
+export function restrictedScreenFromText(
+  values: readonly (string | null | undefined)[],
+): { status: "clear" | "review" | "blocked"; reasons: string[] } {
+  const text = values
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  const blocked = BLOCKED_TEXT_PATTERNS.filter(([pattern]) =>
+    pattern.test(text),
+  ).map(([, reason]) => reason);
+  if (blocked.length > 0) {
+    return { status: "blocked", reasons: [...new Set(blocked)] };
+  }
+  const review = REVIEW_TEXT_PATTERNS.filter(([pattern]) =>
+    pattern.test(text),
+  ).map(([, reason]) => reason);
+  return review.length > 0
+    ? { status: "review", reasons: [...new Set(review)] }
+    : { status: "clear", reasons: [] };
+}
+
+export function combineRestrictedScreens(
+  ...screens: readonly {
+    status: "clear" | "review" | "blocked";
+    reasons: readonly string[];
+  }[]
+): { status: "clear" | "review" | "blocked"; reasons: string[] } {
+  const status = screens.some((screen) => screen.status === "blocked")
+    ? "blocked"
+    : screens.some((screen) => screen.status === "review")
+      ? "review"
+      : "clear";
+  return {
+    status,
+    reasons: [...new Set(screens.flatMap((screen) => screen.reasons))],
+  };
 }
 
 export function assertEnrichmentEvidenceBelongsToItem(

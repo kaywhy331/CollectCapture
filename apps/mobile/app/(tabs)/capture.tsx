@@ -129,6 +129,7 @@ export default function CaptureScreen() {
     setBusy(true);
     setMessage("Cleaning location data and uploading photos…");
     let uploaded: Awaited<ReturnType<typeof sanitizeAndUploadPhotos>> = [];
+    let persisted = false;
     try {
       uploaded = await sanitizeAndUploadPhotos(activeHousehold!.id, photos);
       const result = await api.captureItem(activeHousehold!.id, {
@@ -137,6 +138,7 @@ export default function CaptureScreen() {
         imageFingerprint: uploaded[0]?.contentSha256 ?? null,
         clearingRecommendation: "sell",
       });
+      persisted = true;
       await queryClient.invalidateQueries({
         queryKey: ["items", activeHousehold!.id],
       });
@@ -153,7 +155,7 @@ export default function CaptureScreen() {
         });
       }
     } catch (error) {
-      if (uploaded.length > 0) {
+      if (!persisted && uploaded.length > 0) {
         await removeUploadedPhotos(uploaded.map((photo) => photo.storagePath));
       }
       setMessage(

@@ -77,6 +77,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
       );
       if (result.type !== "success") return;
       const url = new URL(result.url);
+      const code = url.searchParams.get("code");
+      if (code) {
+        const { error: exchangeError } =
+          await supabase.auth.exchangeCodeForSession(code);
+        if (exchangeError) throw exchangeError;
+        return;
+      }
+
+      // Keep a narrow compatibility path for an in-flight legacy implicit
+      // callback while configured providers migrate to PKCE.
       const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
       const accessToken =
         hash.get("access_token") ?? url.searchParams.get("access_token");
