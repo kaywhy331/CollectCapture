@@ -4,6 +4,7 @@
 param(
   [switch]$Resume,
   [switch]$Reconfigure,
+  [switch]$ConfigureOnly,
   [string]$Provider = "",
   [string]$InstallRoot = "",
   [string]$RepositoryRef = "agent/collectcapture-card-lookup"
@@ -20,11 +21,18 @@ $DockerDesktopUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%
 $RunOnceName = "CollectCaptureRedPcBootstrap"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
-if (-not $InstallRoot) {
-  $InstallRoot = Join-Path $env:LOCALAPPDATA "CollectCapture"
+if ($ConfigureOnly) {
+  $ApplicationDirectory = $PSScriptRoot
+  if (-not $InstallRoot) {
+    $InstallRoot = Split-Path -Parent $ApplicationDirectory
+  }
+} else {
+  if (-not $InstallRoot) {
+    $InstallRoot = Join-Path $env:LOCALAPPDATA "CollectCapture"
+  }
+  $ApplicationDirectory = Join-Path $InstallRoot "app"
 }
 
-$ApplicationDirectory = Join-Path $InstallRoot "app"
 $ToolsDirectory = Join-Path $InstallRoot "tools"
 $StateDirectory = Join-Path $InstallRoot "state"
 $StateFile = Join-Path $StateDirectory "bootstrap-state.json"
@@ -47,6 +55,17 @@ function Write-Success {
   param([Parameter(Mandatory = $true)][string]$Message)
 
   Write-Host $Message -ForegroundColor Green
+}
+
+function Write-WizardStep {
+  param(
+    [Parameter(Mandatory = $true)][int]$Number,
+    [Parameter(Mandatory = $true)][string]$Title
+  )
+
+  Write-Host ""
+  Write-Host "[$Number/5] $Title" -ForegroundColor Cyan
+  Write-Host ("-" * 60) -ForegroundColor DarkGray
 }
 
 function Read-Confirmation {
@@ -420,15 +439,20 @@ function Read-RequiredHostname {
 }
 
 function Read-SecretValue {
-  param([Parameter(Mandatory = $true)][string]$Prompt)
+  param(
+    [Parameter(Mandatory = $true)][string]$Prompt,
+    [string]$CurrentValue = ""
+  )
 
   while ($true) {
-    $secure = Read-Host $Prompt -AsSecureString
+    $label = if ($CurrentValue) { "$Prompt (press Enter to keep the saved key)" } else { $Prompt }
+    $secure = Read-Host $label -AsSecureString
     $pointer = [IntPtr]::Zero
     try {
       $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
       $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
       if ($plain -and $plain -notmatch '\s') { return $plain }
+      if (-not $plain -and $CurrentValue) { return $CurrentValue }
     } finally {
       if ($pointer -ne [IntPtr]::Zero) {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
@@ -456,14 +480,20 @@ function Select-RecognitionProvider {
   $saved = Get-SavedProvider
   if ($saved -and -not $Reconfigure) { return $saved }
 
+  $defaultChoice = switch ($saved) {
+    "Groq" { "2" }
+    "OllamaCloud" { "3" }
+    default { "1" }
+  }
   Write-Host ""
   Write-Host "Choose the vision provider CollectCapture should start now:"
-  Write-Host "  1. Local Ollama (default; no AI account or key, larger download)"
+  Write-Host "  1. Local Ollama (no AI account or key, larger download)"
   Write-Host "  2. Groq Cloud (fast startup; requires a Groq API key)"
   Write-Host "  3. Ollama Cloud (requires an Ollama API key)"
   while ($true) {
-    $choice = (Read-Host "Provider [1]").Trim()
-    if (-not $choice -or $choice -eq "1") { return "OllamaLocal" }
+    $choice = (Read-Host "Provider [$defaultChoice]").Trim()
+    if (-not $choice) { $choice = $defaultChoice }
+    if ($choice -eq "1") { return "OllamaLocal" }
     if ($choice -eq "2") { return "Groq" }
     if ($choice -eq "3") { return "OllamaCloud" }
     Write-Host "Enter 1, 2, or 3."
@@ -505,29 +535,115 @@ function Convert-ToDockerHostUrl {
   return $builder.Uri.AbsoluteUri.TrimEnd("/")
 }
 
+function Test-AbsoluteHttpUrl {
+  param(
+    [string]$Value,
+    [switch]$OriginOnly
+  )
+
+  [Uri]$parsed = $null
+  if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref]$parsed)) { return $false }
+  if ($parsed.Scheme -notin @("http", "https") -or -not $parsed.Host) { return $false }
+  if ($parsed.Query -or $parsed.Fragment) { return $false }
+  if ($OriginOnly -and $parsed.AbsolutePath -ne "/") { return $false }
+  return $true
+}
+
+function Test-LocalTunnelConfiguration {
+  param([Parameter(Mandatory = $true)][string]$Hostname)
+
+  if (-not (Test-Path $LocalTunnelConfig)) { return $false }
+  $config = [IO.File]::ReadAllText($LocalTunnelConfig)
+  $credentialMatch = [Regex]::Match(
+    $config,
+    '(?m)^\s*credentials-file:\s*/etc/cloudflared/([^/\s]+\.json)\s*$'
+  )
+  if (-not $credentialMatch.Success) { return $false }
+  $credential = Join-Path $LocalTunnelDirectory $credentialMatch.Groups[1].Value
+  if (-not (Test-Path $credential)) { return $false }
+  $tunnelId = [IO.Path]::GetFileNameWithoutExtension($credentialMatch.Groups[1].Value)
+  if ($tunnelId -notmatch '^[0-9a-fA-F-]{36}$') { return $false }
+  $escapedTunnelId = [Regex]::Escape($tunnelId)
+  $escapedHostname = [Regex]::Escape($Hostname)
+  return (
+    $config -match "(?m)^\s*tunnel:\s*$escapedTunnelId\s*$" -and
+    $config -match "(?m)^\s*-\s+hostname:\s*$escapedHostname\s*$" -and
+    $config -match '(?m)^\s*service:\s*http://card-lookups:4100\s*$' -and
+    $config -match '(?m)^\s*-\s+service:\s*http_status:404\s*$'
+  )
+}
+
+function Test-ConfigurationReady {
+  param([string]$SelectedProvider = "")
+
+  $settings = Get-EnvironmentValues
+  if (-not (Test-AbsoluteHttpUrl ([string]$settings["COLLECTFOLIO_APP_URL"]) -OriginOnly)) { return $false }
+  if (-not (Test-AbsoluteHttpUrl ([string]$settings["COLLECTFOLIO_SUPABASE_URL"]) -OriginOnly)) { return $false }
+  if (-not (Test-AbsoluteHttpUrl ([string]$settings["COLLECTFOLIO_CATALOG_URL"]))) { return $false }
+
+  $hostname = [string]$settings["CLOUDFLARE_TUNNEL_HOSTNAME"]
+  if (
+    [Uri]::CheckHostName($hostname) -ne [UriHostNameType]::Dns -or
+    -not $hostname.Contains(".")
+  ) {
+    return $false
+  }
+
+  if (-not $SelectedProvider) { $SelectedProvider = Get-SavedProvider }
+  if ($SelectedProvider -notin @("Groq", "OllamaCloud", "OllamaLocal")) { return $false }
+  if ($SelectedProvider -eq "Groq" -and -not $settings["GROQ_API_KEY"]) { return $false }
+  if ($SelectedProvider -eq "OllamaCloud" -and -not $settings["OLLAMA_API_KEY"]) { return $false }
+
+  if (Test-Path $LocalTunnelConfig) {
+    return (Test-LocalTunnelConfiguration -Hostname $hostname)
+  }
+  return [bool]$settings["CLOUDFLARE_TUNNEL_TOKEN"]
+}
+
 function Configure-CollectCapture {
-  Write-Step "Collecting the three CollectFolio connection addresses"
-  Write-Host "These values are copied into a private local file; no manual editing is needed."
   $existing = Get-EnvironmentValues
 
-  $appCurrent = if ($Reconfigure) { [string]$existing["COLLECTFOLIO_APP_URL"] } elseif ($existing["COLLECTFOLIO_APP_URL"]) { [string]$existing["COLLECTFOLIO_APP_URL"] } else { "" }
-  $supabaseCurrent = if ($Reconfigure) { [string]$existing["COLLECTFOLIO_SUPABASE_URL"] } elseif ($existing["COLLECTFOLIO_SUPABASE_URL"]) { [string]$existing["COLLECTFOLIO_SUPABASE_URL"] } else { "" }
-  $catalogCurrent = if ($Reconfigure) { [string]$existing["COLLECTFOLIO_CATALOG_URL"] } elseif ($existing["COLLECTFOLIO_CATALOG_URL"]) { [string]$existing["COLLECTFOLIO_CATALOG_URL"] } else { "" }
+  Write-WizardStep 1 "Connect the CollectFolio website"
+  Write-Host "Enter the exact address shown in the browser when CollectFolio is open."
+  Write-Host "This controls which website is allowed to call the private API."
+  $appCurrent = [string]$existing["COLLECTFOLIO_APP_URL"]
+  $appUrl = if (-not $Reconfigure -and (Test-AbsoluteHttpUrl $appCurrent -OriginOnly)) {
+    Write-Host "Using saved browser origin: $appCurrent"
+    $appCurrent
+  } else {
+    Read-RequiredUrl "CollectFolio browser origin (example: https://folio.example.com)" $appCurrent -OriginOnly
+  }
 
-  $appUrl = if ($appCurrent -and -not $Reconfigure) { $appCurrent } else { Read-RequiredUrl "CollectFolio browser origin (example: https://folio.example.com)" $appCurrent -OriginOnly }
-  $supabaseUrl = if ($supabaseCurrent -and -not $Reconfigure) { $supabaseCurrent } else { Read-RequiredUrl "CollectFolio Supabase project URL" $supabaseCurrent -OriginOnly }
-  $catalogUrl = if ($catalogCurrent -and -not $Reconfigure) { $catalogCurrent } else { Read-RequiredUrl "CollectFolio catalog API URL" $catalogCurrent }
+  Write-WizardStep 2 "Connect CollectFolio sign-in"
+  Write-Host "Enter the Supabase Project URL from CollectFolio's Supabase project settings."
+  Write-Host "CollectCapture uses it only to verify signed-in CollectFolio users."
+  $supabaseCurrent = [string]$existing["COLLECTFOLIO_SUPABASE_URL"]
+  $supabaseUrl = if (-not $Reconfigure -and (Test-AbsoluteHttpUrl $supabaseCurrent -OriginOnly)) {
+    Write-Host "Using saved Supabase URL: $supabaseCurrent"
+    $supabaseCurrent
+  } else {
+    Read-RequiredUrl "CollectFolio Supabase project URL" $supabaseCurrent -OriginOnly
+  }
 
-  $hostnameCurrent = if ($existing["CLOUDFLARE_TUNNEL_HOSTNAME"]) { [string]$existing["CLOUDFLARE_TUNNEL_HOSTNAME"] } else { "" }
-  $hostname = if ($hostnameCurrent -and -not $Reconfigure) { $hostnameCurrent } else { Read-RequiredHostname $hostnameCurrent }
+  Write-WizardStep 3 "Connect the card catalog"
+  Write-Host "Enter the catalog API address CollectFolio uses for card records."
+  Write-Host "Localhost addresses are translated automatically for Docker."
+  $catalogCurrent = [string]$existing["COLLECTFOLIO_CATALOG_URL"]
+  $catalogUrl = if (-not $Reconfigure -and (Test-AbsoluteHttpUrl $catalogCurrent)) {
+    Write-Host "Using saved catalog URL: $catalogCurrent"
+    $catalogCurrent
+  } else {
+    Read-RequiredUrl "CollectFolio catalog API URL" $catalogCurrent
+  }
 
+  Write-WizardStep 4 "Choose card-recognition processing"
   $selectedProvider = Select-RecognitionProvider
+  Write-Host "Selected provider: $selectedProvider"
   $dockerCatalogUrl = Convert-ToDockerHostUrl -Url $catalogUrl
   $updates = @{
     COLLECTFOLIO_APP_URL = $appUrl
     COLLECTFOLIO_SUPABASE_URL = $supabaseUrl
     COLLECTFOLIO_CATALOG_URL = $dockerCatalogUrl
-    CLOUDFLARE_TUNNEL_HOSTNAME = $hostname
   }
   [Uri]$supabaseUri = $supabaseUrl
   $jwksBase = if ($supabaseUri.Host -in @("localhost", "127.0.0.1", "::1")) {
@@ -537,21 +653,62 @@ function Configure-CollectCapture {
   }
   $updates["COLLECTFOLIO_SUPABASE_JWKS_URL"] = "$jwksBase/auth/v1/.well-known/jwks.json"
   if ($selectedProvider -eq "Groq") {
+    Write-Host "Create or copy a Groq key from https://console.groq.com/keys"
     $currentKey = [string]$existing["GROQ_API_KEY"]
     if (-not $currentKey -or $Reconfigure) {
-      $currentKey = Read-SecretValue "Groq API key (input is hidden)"
+      $currentKey = Read-SecretValue "Groq API key (input is hidden)" $currentKey
     }
     $updates["GROQ_API_KEY"] = $currentKey
   }
   if ($selectedProvider -eq "OllamaCloud") {
+    Write-Host "Create or copy an Ollama key from https://ollama.com/settings/keys"
     $currentKey = [string]$existing["OLLAMA_API_KEY"]
     if (-not $currentKey -or $Reconfigure) {
-      $currentKey = Read-SecretValue "Ollama API key (input is hidden)"
+      $currentKey = Read-SecretValue "Ollama API key (input is hidden)" $currentKey
     }
     $updates["OLLAMA_API_KEY"] = $currentKey
   }
+
+  Write-WizardStep 5 "Choose the public HTTPS address"
+  Write-Host "Enter the hostname CollectFolio will call from another network."
+  Write-Host "If no tunnel exists yet, a Cloudflare browser authorization follows."
+  $hostnameCurrent = [string]$existing["CLOUDFLARE_TUNNEL_HOSTNAME"]
+  $hostnameReady = (
+    [Uri]::CheckHostName($hostnameCurrent) -eq [UriHostNameType]::Dns -and
+    $hostnameCurrent.Contains(".")
+  )
+  $hostname = if ($hostnameReady -and -not $Reconfigure) {
+    Write-Host "Using saved public hostname: $hostnameCurrent"
+    $hostnameCurrent
+  } else {
+    Read-RequiredHostname $hostnameCurrent
+  }
+  $updates["CLOUDFLARE_TUNNEL_HOSTNAME"] = $hostname
+
+  $tunnelDescription = if (Test-LocalTunnelConfiguration -Hostname $hostname) {
+    "Existing browser-authorized Cloudflare Tunnel"
+  } elseif ($existing["CLOUDFLARE_TUNNEL_TOKEN"] -and -not (Test-Path $LocalTunnelConfig)) {
+    "Existing dashboard-managed Cloudflare Tunnel"
+  } else {
+    "Cloudflare browser authorization will be opened next"
+  }
+
+  Write-Step "Review and register these settings"
+  Write-Host "CollectFolio website : $appUrl"
+  Write-Host "Supabase project     : $supabaseUrl"
+  Write-Host "Catalog API          : $dockerCatalogUrl"
+  Write-Host "Vision provider      : $selectedProvider"
+  Write-Host "Provider credential  : $(if ($selectedProvider -eq 'OllamaLocal') { 'Not required' } else { 'Entered securely (hidden)' })"
+  Write-Host "Public HTTPS URL      : https://$hostname"
+  Write-Host "Tunnel setup         : $tunnelDescription"
+  Write-Host ""
+  Write-Host "Secrets are saved only in the ignored private settings file on this PC."
+  if (-not (Read-Confirmation "Register these settings with CollectCapture?" $true)) {
+    throw "Setup was cancelled before any settings were changed."
+  }
+
   Set-EnvironmentValues -Updates $updates
-  Write-Success "Private CollectCapture settings are ready."
+  Write-Success "The private settings were registered successfully."
 
   return @{
     Provider = $selectedProvider
@@ -648,6 +805,17 @@ function Get-ExistingLocalTunnelId {
   return ""
 }
 
+function Get-ConfiguredLocalTunnelId {
+  if (-not (Test-Path $LocalTunnelConfig)) { return "" }
+  $config = [IO.File]::ReadAllText($LocalTunnelConfig)
+  $credentialMatch = [Regex]::Match(
+    $config,
+    '(?m)^\s*credentials-file:\s*/etc/cloudflared/([0-9a-fA-F-]{36})\.json\s*$'
+  )
+  if ($credentialMatch.Success) { return $credentialMatch.Groups[1].Value }
+  return ""
+}
+
 function Write-LocalTunnelConfig {
   param(
     [Parameter(Mandatory = $true)][string]$TunnelId,
@@ -671,8 +839,8 @@ function Ensure-CloudflareTunnel {
 
   Write-Step "Creating the stable public HTTPS tunnel"
   [IO.Directory]::CreateDirectory($LocalTunnelDirectory) | Out-Null
-  $localTunnelId = Get-ExistingLocalTunnelId
-  if ($localTunnelId -and (Test-Path $LocalTunnelConfig) -and -not $Reconfigure) {
+  if (Test-LocalTunnelConfiguration -Hostname $Hostname) {
+    $localTunnelId = Get-ConfiguredLocalTunnelId
     Write-Success "The existing local Cloudflare Tunnel configuration will be reused."
     return @{
       TunnelId = $localTunnelId
@@ -680,6 +848,7 @@ function Ensure-CloudflareTunnel {
     }
   }
 
+  $localTunnelId = Get-ExistingLocalTunnelId
   $tunnels = Ensure-CloudflareLogin
   $computerName = ($env:COMPUTERNAME -replace '[^A-Za-z0-9-]', '-').Trim('-').ToLowerInvariant()
   if (-not $computerName) { $computerName = "red-pc" }
@@ -736,6 +905,27 @@ function Ensure-CloudflareTunnel {
     TunnelId = $tunnelId
     Hostname = $Hostname
   }
+}
+
+function Resolve-CloudflareTunnel {
+  param([Parameter(Mandatory = $true)][string]$Hostname)
+
+  if (Test-LocalTunnelConfiguration -Hostname $Hostname) {
+    return Ensure-CloudflareTunnel -Hostname $Hostname
+  }
+
+  $settings = Get-EnvironmentValues
+  if (-not (Test-Path $LocalTunnelConfig) -and $settings["CLOUDFLARE_TUNNEL_TOKEN"]) {
+    Write-Success "The existing dashboard-managed Cloudflare Tunnel will be reused."
+    Write-Host "Confirm its Published application route sends https://$Hostname to http://card-lookups:4100."
+    return @{
+      TunnelId = ""
+      Hostname = $Hostname
+    }
+  }
+
+  Ensure-CloudflaredExecutable
+  return Ensure-CloudflareTunnel -Hostname $Hostname
 }
 
 function Test-NvidiaGpu {
@@ -833,14 +1023,81 @@ function Save-BootstrapState {
   [IO.File]::WriteAllText($StateFile, $state, $Utf8NoBom)
 }
 
+function Save-SelectedProvider {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProvider,
+    [Parameter(Mandatory = $true)][string]$Hostname
+  )
+
+  $useNvidia = $false
+  if (Test-Path $StateFile) {
+    try {
+      $previous = [IO.File]::ReadAllText($StateFile) | ConvertFrom-Json
+      if ($previous.PSObject.Properties["nvidia"]) {
+        $useNvidia = [bool]$previous.nvidia
+      }
+    } catch {
+      $useNvidia = $false
+    }
+  }
+  Save-BootstrapState -SelectedProvider $SelectedProvider -UseNvidia $useNvidia -Hostname $Hostname
+}
+
+function Assert-CollectCaptureApplicationFiles {
+  $requiredFiles = @(
+    $EnvironmentTemplate,
+    (Join-Path $ApplicationDirectory "red-pc-card-lookups.cmd"),
+    (Join-Path $ApplicationDirectory "scripts\red-pc-card-lookups.ps1"),
+    (Join-Path $ApplicationDirectory "compose.card-lookups.yml"),
+    (Join-Path $ApplicationDirectory "compose.card-lookups.tunnel.yml"),
+    (Join-Path $ApplicationDirectory "compose.card-lookups.tunnel-local.yml")
+  )
+  $missingFiles = @($requiredFiles | Where-Object { -not (Test-Path $_) })
+  if ($missingFiles.Count -gt 0) {
+    throw "CollectCapture's server files are incomplete. Run the one-command RED PC installer again."
+  }
+}
+
+function Invoke-GuidedConfiguration {
+  Assert-CollectCaptureApplicationFiles
+  $selectedProvider = if ($Provider) { $Provider } else { Get-SavedProvider }
+  if (-not $Reconfigure -and (Test-ConfigurationReady -SelectedProvider $selectedProvider)) {
+    $settings = Get-EnvironmentValues
+    $hostname = [string]$settings["CLOUDFLARE_TUNNEL_HOSTNAME"]
+    Save-SelectedProvider -SelectedProvider $selectedProvider -Hostname $hostname
+    Write-Success "The saved $selectedProvider settings and HTTPS tunnel are ready."
+    return @{
+      Provider = $selectedProvider
+      Hostname = $hostname
+    }
+  }
+
+  Write-Host ""
+  Write-Host "The setup assistant will register each required server setting." -ForegroundColor Cyan
+  Write-Host "Press Enter to keep a displayed saved value. Provider keys stay hidden."
+  $configuration = Configure-CollectCapture
+  $tunnel = Resolve-CloudflareTunnel -Hostname $configuration.Hostname
+  $configuration["Hostname"] = $tunnel.Hostname
+  Save-SelectedProvider -SelectedProvider $configuration.Provider -Hostname $configuration.Hostname
+  return $configuration
+}
+
 function Invoke-CollectCaptureBootstrap {
   Clear-Host
   Write-Host "============================================================" -ForegroundColor Cyan
-  Write-Host "       CollectCapture one-command RED PC setup" -ForegroundColor Cyan
+  if ($ConfigureOnly) {
+    Write-Host "       CollectCapture guided server setup" -ForegroundColor Cyan
+  } else {
+    Write-Host "       CollectCapture one-command RED PC setup" -ForegroundColor Cyan
+  }
   Write-Host "============================================================" -ForegroundColor Cyan
   Write-Host ""
-  Write-Host "This setup installs Docker Desktop, downloads CollectCapture, configures"
-  Write-Host "a vision provider, creates a stable Cloudflare HTTPS tunnel, and starts it."
+  if ($ConfigureOnly) {
+    Write-Host "This assistant checks and registers the settings needed by the server."
+  } else {
+    Write-Host "This setup installs Docker Desktop, downloads CollectCapture, configures"
+    Write-Host "a vision provider, creates a stable Cloudflare HTTPS tunnel, and starts it."
+  }
   Write-Host "It will not ask you to edit configuration files."
   Write-Host ""
   Write-Host "You will still need:"
@@ -859,15 +1116,21 @@ function Invoke-CollectCaptureBootstrap {
   [IO.Directory]::CreateDirectory($InstallRoot) | Out-Null
   [IO.Directory]::CreateDirectory($ToolsDirectory) | Out-Null
   [IO.Directory]::CreateDirectory($StateDirectory) | Out-Null
+
+  if ($ConfigureOnly) {
+    $configuration = Invoke-GuidedConfiguration
+    Write-Host ""
+    Write-Success "CollectCapture is configured for $($configuration.Provider)."
+    Write-Host "Public API: https://$($configuration.Hostname)"
+    return
+  }
+
   Save-PersistedBootstrap
 
   Ensure-WslReady
   Ensure-DockerDesktop
   Install-CollectCaptureFiles
-  $configuration = Configure-CollectCapture
-  Ensure-CloudflaredExecutable
-  $tunnel = Ensure-CloudflareTunnel -Hostname $configuration.Hostname
-  $configuration["Hostname"] = $tunnel.Hostname
+  $configuration = Invoke-GuidedConfiguration
 
   $useNvidia = $false
   if ($configuration.Provider -eq "OllamaLocal") {
@@ -902,7 +1165,11 @@ try {
   Write-Host "CollectCapture setup stopped:" -ForegroundColor Red
   Write-Host $_.Exception.Message -ForegroundColor Red
   Write-Host ""
-  Write-Host "Fix the item above, then paste the same one-command installer again."
+  if ($ConfigureOnly) {
+    Write-Host "Fix the item above, then run Guided setup from the launcher again."
+  } else {
+    Write-Host "Fix the item above, then paste the same one-command installer again."
+  }
   exit 1
 } finally {
   if ($TemporaryDirectory -and (Test-Path $TemporaryDirectory)) {

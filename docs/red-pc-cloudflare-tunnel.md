@@ -25,14 +25,14 @@ The bootstrap installs Docker Desktop and downloads the repository. It also down
 
 ## Automatic setup from an empty RED PC
 
-Paste the single command from the [RED PC Docker guide](red-pc-card-lookups.md) into PowerShell or Command Prompt. The bootstrap asks for the public hostname, opens `cloudflared tunnel login` in the browser, creates a computer-specific named tunnel, adds its DNS route without overwriting an existing record, and writes the ignored local files:
+Paste the single command from the [RED PC Docker guide](red-pc-card-lookups.md) into PowerShell or Command Prompt. On the fifth screen, the guided assistant asks for the public hostname and shows it on a non-secret review screen. After confirmation, it opens `cloudflared tunnel login` in the browser, creates a computer-specific named tunnel, adds its DNS route without overwriting an existing record, and writes the ignored local files:
 
 ```text
 %LOCALAPPDATA%\CollectCapture\app\.cloudflared\config.yml
 %LOCALAPPDATA%\CollectCapture\app\.cloudflared\<TUNNEL-UUID>.json
 ```
 
-The config contains a final catch-all ingress rule and sends only the selected hostname to `http://card-lookups:4100`. The credential JSON is never printed or placed in an environment variable. Compose mounts the ignored directory read-only into the connector container. On later starts, `red-pc-card-lookups.ps1 -Tunnel` detects this config and selects `compose.card-lookups.tunnel-local.yml` automatically.
+The config contains a final catch-all ingress rule and sends only the selected hostname to `http://card-lookups:4100`. The credential JSON is never printed or placed in an environment variable. Compose mounts the ignored directory read-only into the connector container. On later starts, the double-click launcher validates and reuses the matching tunnel without another login; `red-pc-card-lookups.ps1 -Tunnel` detects this config and selects `compose.card-lookups.tunnel-local.yml` automatically.
 
 The DNS route command intentionally does not use `--overwrite-dns`. If the requested hostname already has a record, setup leaves it untouched and offers to try a different hostname in the same guided run.
 
@@ -40,10 +40,10 @@ The DNS route command intentionally does not use `--overwrite-dns`. If the reque
 
 Use this path only when a remotely managed tunnel already exists or its lifecycle must stay in the Cloudflare dashboard. It preserves the prior connector-token workflow.
 
-1. Double-click [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd). It creates the ignored `.env.card-lookups.red-pc` file and opens it in Notepad. Fill in its CollectFolio and provider settings, save it, and keep the launcher menu open.
-2. In the Cloudflare dashboard, go to **Networking > Tunnels**, select **Create a tunnel**, and name it something recognizable such as `collectcapture-red-pc`.
-3. Choose the Docker connector instructions. Cloudflare displays a command ending in `--token <TOKEN>`. Copy only the token value into `.env.card-lookups.red-pc`; never commit or send that value to CollectFolio.
-4. Choose the stable hostname you will publish and add these values to the same file:
+1. In the Cloudflare dashboard, go to **Networking > Tunnels**, select **Create a tunnel**, and name it something recognizable such as `collectcapture-red-pc`.
+2. Choose the Docker connector instructions. Cloudflare displays a command ending in `--token <TOKEN>`. Keep that page open and never commit or send the token to CollectFolio.
+3. In the CollectCapture directory on RED PC, copy `.env.card-lookups.red-pc.example` to the ignored `.env.card-lookups.red-pc` file if it does not exist. Open the private copy in your preferred text editor and fill in its CollectFolio and selected-provider values.
+4. Choose the stable hostname you will publish and add these values to the same private file:
 
 ```dotenv
 CLOUDFLARE_TUNNEL_HOSTNAME=capture.example.com
@@ -52,13 +52,13 @@ CLOUDFLARED_IMAGE=cloudflare/cloudflared:2026.8.2
 COLLECTCAPTURE_BIND_ADDRESS=127.0.0.1
 ```
 
-5. In the double-click launcher's menu, choose the selected vision provider. For command-line use, the equivalent is:
+5. Double-click [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd) and choose the selected vision provider. The pre-start check validates the complete private file and preserves dashboard-managed token mode instead of opening browser tunnel registration. For command-line use, the equivalent is:
 
 ```powershell
 .\red-pc-card-lookups.cmd -Provider Groq -Tunnel
 ```
 
-Use `-Provider OllamaCloud -Tunnel`, or add `-Tunnel` to either local Ollama launcher form, if that is the qualified provider. The launcher rejects a missing token and rejects a URL or path in `CLOUDFLARE_TUNNEL_HOSTNAME` before starting Docker.
+Use `-Provider OllamaCloud -Tunnel`, or add `-Tunnel` to either local Ollama launcher form, if that is the qualified provider. The launcher rejects a missing token and rejects a URL or path in `CLOUDFLARE_TUNNEL_HOSTNAME` before starting Docker. Guided setup option 8 can later change the ordinary settings while preserving this token mode; if the hostname changes, update its Published application route in the Cloudflare dashboard too.
 
 6. Wait for the tunnel to show **Healthy** in Cloudflare, then open its **Routes** tab and add a **Published application** route with:
 

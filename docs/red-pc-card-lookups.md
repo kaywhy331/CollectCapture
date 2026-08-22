@@ -7,10 +7,10 @@ This Docker Desktop stack runs only CollectCapture's stateless card-lookup API. 
 On an unconfigured 64-bit Windows 10 or Windows 11 RED PC, paste this one command into either PowerShell or Command Prompt:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest 'https://raw.githubusercontent.com/kaywhy331/CollectCapture/refs/heads/agent/collectcapture-card-lookup/bootstrap-red-pc.ps1' -OutFile ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1')) -UseBasicParsing;if((Get-FileHash -LiteralPath ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1')) -Algorithm SHA256).Hash -ne '7cf2ab2cf638d092d8d4ff2bfb1182b3446dac5a8c729d7407c43c5fdcb273b0'){throw 'CollectCapture bootstrap checksum mismatch'};& ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1'))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest 'https://raw.githubusercontent.com/kaywhy331/CollectCapture/refs/heads/agent/collectcapture-card-lookup/bootstrap-red-pc.ps1' -OutFile ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1')) -UseBasicParsing;if((Get-FileHash -LiteralPath ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1')) -Algorithm SHA256).Hash -ne '0313e2d72b67bbd75234538f04dad3c4280e0b709b171b2760cc460be1ee1e73'){throw 'CollectCapture bootstrap checksum mismatch'};& ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1'))"
 ```
 
-The signed-download bootstrap handles WSL 2, a per-user Docker Desktop install, repository download, private environment-file creation, Cloudflare Tunnel creation and DNS routing, Docker startup, local and public health checks, and a **CollectCapture HTTPS** desktop shortcut. It can register itself to resume after a required Windows restart. No Git, Node.js, package manager, repository clone, router port-forward, dashboard tunnel construction, or manual settings-file editing is required.
+The signed-download bootstrap handles WSL 2, a per-user Docker Desktop install, repository download, guided private-server registration, Cloudflare Tunnel creation and DNS routing, Docker startup, local and public health checks, and a **CollectCapture HTTPS** desktop shortcut. It can register itself to resume after a required Windows restart. No Git, Node.js, package manager, repository clone, router port-forward, dashboard tunnel construction, or manual settings-file editing is required.
 
 Some facts cannot be created safely by an installer. Keep these ready when the guided prompts ask for them:
 
@@ -20,7 +20,17 @@ Some facts cannot be created safely by an installer. Keep these ready when the g
 
 Docker's license acceptance and Windows administrator approval for first-time WSL enablement also require an explicit click or answer. The bootstrap defaults to local Ollama, which needs no provider account or API key, and automatically selects NVIDIA acceleration when a compatible GPU is detected. On a lower-memory or CPU-only computer, Groq or Ollama Cloud is generally faster.
 
-If this repository is already present on RED PC, double-click [`INSTALL-COLLECTCAPTURE-RED-PC.cmd`](../INSTALL-COLLECTCAPTURE-RED-PC.cmd) for the same verified bootstrap. After installation, use the desktop shortcut or [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd) for routine starts, status, logs, and stops.
+The setup assistant walks through five short screens:
+
+1. **CollectFolio website:** enter the exact browser origin, such as `https://folio.example.com`. Do not include a page path.
+2. **CollectFolio sign-in:** enter its Supabase Project URL. This is commonly the `VITE_SUPABASE_URL` value used by CollectFolio.
+3. **Card catalog:** enter the catalog API base URL used by CollectFolio. A RED PC `localhost` address is translated automatically for Docker.
+4. **Recognition provider:** choose local Ollama, Groq Cloud, or Ollama Cloud. Groq and Ollama keys are entered through a hidden prompt; local Ollama needs no provider key.
+5. **Public HTTPS address:** enter an unused hostname under a domain already active on Cloudflare DNS, such as `capture.example.com`. The assistant then asks before opening Cloudflare browser authorization.
+
+A review screen shows every non-secret setting before anything is written. Provider keys never appear in the review or console output. Approved values are stored only in the ignored `.env.card-lookups.red-pc` file on RED PC; browser-authorized tunnel credentials are stored only in the ignored `.cloudflared` directory.
+
+If this repository is already present on RED PC, double-click [`INSTALL-COLLECTCAPTURE-RED-PC.cmd`](../INSTALL-COLLECTCAPTURE-RED-PC.cmd) for the same verified bootstrap. After installation, use the desktop shortcut or [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd) for routine starts, status, logs, and stops. Choosing a start option checks the saved values for that provider and opens the guided assistant only when something is missing. Menu option **8. Guided setup / change settings** walks through all five screens again; press Enter to retain a displayed value or an existing hidden key.
 
 ## Advanced command-line launcher
 

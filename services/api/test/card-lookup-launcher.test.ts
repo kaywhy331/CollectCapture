@@ -125,7 +125,29 @@ describe("card lookup launcher", () => {
     expect(bootstrap).toContain("tunnel create");
     expect(bootstrap).toContain("tunnel route dns");
     expect(bootstrap).not.toContain("--overwrite-dns");
-    expect(bootstrap).toContain("Read-Host $Prompt -AsSecureString");
+    expect(bootstrap).toContain("Read-Host $label -AsSecureString");
+    expect(bootstrap).toContain("[switch]$ConfigureOnly");
+    expect(bootstrap).toContain(
+      'Write-WizardStep 1 "Connect the CollectFolio website"',
+    );
+    expect(bootstrap).toContain(
+      'Write-WizardStep 2 "Connect CollectFolio sign-in"',
+    );
+    expect(bootstrap).toContain(
+      'Write-WizardStep 3 "Connect the card catalog"',
+    );
+    expect(bootstrap).toContain(
+      'Write-WizardStep 4 "Choose card-recognition processing"',
+    );
+    expect(bootstrap).toContain(
+      'Write-WizardStep 5 "Choose the public HTTPS address"',
+    );
+    expect(bootstrap).toContain("Review and register these settings");
+    expect(bootstrap).toContain("press Enter to keep the saved key");
+    expect(bootstrap).toContain("Test-ConfigurationReady");
+    expect(bootstrap).toContain(
+      "Test-LocalTunnelConfiguration -Hostname $Hostname",
+    );
     expect(bootstrap).toContain("RunOnce");
     expect(bootstrap).toContain("Invoke-RestMethod");
     expect(bootstrap).toContain("CollectCapture HTTPS.lnk");
@@ -153,8 +175,12 @@ describe("card lookup launcher", () => {
     expect(batchFile).toContain("-Provider OllamaCloud -Tunnel");
     expect(batchFile).toContain("-Provider OllamaLocal -Nvidia -Tunnel");
     expect(batchFile).toContain("-Provider OllamaLocal -Tunnel");
-    expect(batchFile).toContain(".env.card-lookups.red-pc");
-    expect(batchFile).toContain("notepad.exe");
+    expect(batchFile).toContain("bootstrap-red-pc.ps1");
+    expect(batchFile).toContain("-ConfigureOnly");
+    expect(batchFile).toContain('-Provider "%~2"');
+    expect(batchFile).toContain("-Reconfigure");
+    expect(batchFile).toContain("Guided setup / change settings");
+    expect(batchFile).not.toContain("notepad.exe");
     expect(batchFile).toContain("-Action Down -Provider Groq");
     expect(batchFile).not.toContain("CLOUDFLARE_TUNNEL_TOKEN=");
   });
