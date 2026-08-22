@@ -1,6 +1,6 @@
 # RED PC public HTTPS with Cloudflare Tunnel
 
-This optional Compose sidecar gives CollectFolio a stable HTTPS base URL even when RED PC is on another network. It uses a named, remotely managed Cloudflare Tunnel and outbound-only connectivity. No router port-forward or public RED PC port is required.
+This optional Compose sidecar gives CollectFolio a stable HTTPS base URL even when RED PC is on another network. The one-command setup creates a named, locally managed Cloudflare Tunnel; an existing remotely managed connector-token tunnel remains supported as an advanced alternative. Both use outbound-only connectivity. No router port-forward or public RED PC port is required.
 
 The resulting traffic path is:
 
@@ -18,12 +18,27 @@ Quick Tunnels generate temporary hostnames and are not suitable for CollectFolio
 
 - A domain active on Cloudflare DNS. A single-label subdomain such as `capture.example.com` works with the usual edge certificate; Cloudflare documents extra certificate requirements for multi-level names such as `capture.home.example.com`.
 - A Cloudflare account allowed to create a tunnel and DNS route for that domain.
-- Docker Desktop running on RED PC.
+- The three CollectFolio service addresses and a provider key only if using Groq or Ollama Cloud.
 - Outbound DNS plus TCP and UDP port `7844` from Docker Desktop to Cloudflare Tunnel endpoints. No inbound firewall rule is needed. With the default `auto` transport, `cloudflared` prefers QUIC and falls back to HTTP/2 when UDP is unavailable.
 
-The pinned `cloudflare/cloudflared:2026.8.2` image includes Cloudflare's automatic startup connectivity checks. Cloudflare supports releases within one year of its newest release; periodically review the [official downloads page](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/) and deliberately update `CLOUDFLARED_IMAGE` to a tested release.
+The bootstrap installs Docker Desktop and downloads the repository. It also downloads the pinned `cloudflared` 2026.8.2 Windows client from Cloudflare's GitHub release, verifies its pinned SHA-256 digest and Windows publisher signature, and uses it only for account authorization and tunnel provisioning. The running connector is the pinned `cloudflare/cloudflared:2026.8.2` container image.
 
-## Create the named tunnel
+## Automatic setup from an empty RED PC
+
+Paste the single command from the [RED PC Docker guide](red-pc-card-lookups.md) into PowerShell or Command Prompt. The bootstrap asks for the public hostname, opens `cloudflared tunnel login` in the browser, creates a computer-specific named tunnel, adds its DNS route without overwriting an existing record, and writes the ignored local files:
+
+```text
+%LOCALAPPDATA%\CollectCapture\app\.cloudflared\config.yml
+%LOCALAPPDATA%\CollectCapture\app\.cloudflared\<TUNNEL-UUID>.json
+```
+
+The config contains a final catch-all ingress rule and sends only the selected hostname to `http://card-lookups:4100`. The credential JSON is never printed or placed in an environment variable. Compose mounts the ignored directory read-only into the connector container. On later starts, `red-pc-card-lookups.ps1 -Tunnel` detects this config and selects `compose.card-lookups.tunnel-local.yml` automatically.
+
+The DNS route command intentionally does not use `--overwrite-dns`. If the requested hostname already has a record, setup leaves it untouched and offers to try a different hostname in the same guided run.
+
+## Manual remotely managed alternative
+
+Use this path only when a remotely managed tunnel already exists or its lifecycle must stay in the Cloudflare dashboard. It preserves the prior connector-token workflow.
 
 1. Double-click [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd). It creates the ignored `.env.card-lookups.red-pc` file and opens it in Notepad. Fill in its CollectFolio and provider settings, save it, and keep the launcher menu open.
 2. In the Cloudflare dashboard, go to **Networking > Tunnels**, select **Create a tunnel**, and name it something recognizable such as `collectcapture-red-pc`.
@@ -68,7 +83,7 @@ https://capture.example.com
 
 `COLLECTFOLIO_APP_URL` in CollectCapture must still equal CollectFolio's exact browser origin, for example `https://folio.example.com`; it is not the tunnel hostname. CollectFolio must continue sending the signed-in user's Supabase bearer token to `POST /v1/card-lookups`.
 
-The connector token authenticates RED PC to Cloudflare only. Never place it in browser code, a CollectFolio environment variable, a request header, an issue, or a log excerpt.
+For the manual path, the connector token authenticates RED PC to Cloudflare only. Never place it in browser code, a CollectFolio environment variable, a request header, an issue, or a log excerpt. For the automatic path, treat `.cloudflared/<TUNNEL-UUID>.json` with the same care.
 
 ## Verify from RED PC and another network
 
@@ -117,7 +132,7 @@ The published hostname is reachable from the Internet, but the card-lookup route
 
 That choice avoids putting an Access service token in browser code. If Access is introduced later, design a browser-safe user authentication flow and verify CORS preflights and bearer-token forwarding before enabling it. Do not weaken CollectCapture's JWT checks because the request arrived through Cloudflare.
 
-Keep `.env.card-lookups.red-pc` private; it is ignored by Git. If the connector token is exposed, rotate it in the Cloudflare dashboard and replace the local value. The token should never appear in Compose command arguments; the sidecar receives it through its environment.
+Keep `.env.card-lookups.red-pc` and `.cloudflared/` private; both are ignored by Git. If a manual connector token is exposed, rotate it in the Cloudflare dashboard and replace the local value. If a local credential JSON is exposed, delete and recreate that tunnel. The token should never appear in Compose command arguments; the manual sidecar receives it through its environment.
 
 ## Troubleshooting
 
@@ -137,10 +152,12 @@ To stop public traffic immediately while leaving RED PC untouched, remove the Pu
 .\red-pc-card-lookups.cmd -Provider Groq
 ```
 
-`Down` uses Compose orphan cleanup, so it removes the tunnel sidecar even when `-Tunnel` is omitted. This is useful if the connector token has already been revoked. For permanent decommissioning, also delete or revoke the tunnel in Cloudflare and remove the two `CLOUDFLARE_TUNNEL_*` values from the local environment file. Coordinate changing CollectFolio's API base URL with the agent or owner responsible for CollectFolio.
+`Down` uses Compose orphan cleanup, so it removes the tunnel sidecar even when `-Tunnel` is omitted. This is useful if a credential has already been revoked. For permanent decommissioning, also delete or revoke the tunnel in Cloudflare. Manual installations can remove the two `CLOUDFLARE_TUNNEL_*` values; automatic installations can remove the ignored `.cloudflared` directory after the tunnel is deleted. Coordinate changing CollectFolio's API base URL with the agent or owner responsible for CollectFolio.
 
 Official Cloudflare references used by this runbook:
 
+- [Create a locally managed tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/create-local-tunnel/)
+- [Locally managed tunnel configuration](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/configuration-file/)
 - [Create a remotely managed tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/)
 - [Published-application DNS records](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/dns/)
 - [Tunnel run token and transport parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/)

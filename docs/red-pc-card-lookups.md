@@ -4,9 +4,27 @@ This Docker Desktop stack runs only CollectCapture's stateless card-lookup API. 
 
 ## Quick start on Windows
 
-For the easiest setup, open the CollectCapture folder in File Explorer and double-click [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd). On its first run it creates the ignored private settings file, opens that file in Notepad, and then presents a menu for Groq Cloud, Ollama Cloud, or local Ollama. Every start option in this menu includes the stable HTTPS tunnel. The window stays open when setup or startup fails so the error remains visible.
+On an unconfigured 64-bit Windows 10 or Windows 11 RED PC, paste this one command into either PowerShell or Command Prompt:
 
-The command-line launcher remains available for scripting and advanced use. Install and start a current Docker Desktop release, then choose one provider from PowerShell in the CollectCapture repository:
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest 'https://raw.githubusercontent.com/kaywhy331/CollectCapture/refs/heads/agent/collectcapture-card-lookup/bootstrap-red-pc.ps1' -OutFile ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1')) -UseBasicParsing;if((Get-FileHash -LiteralPath ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1')) -Algorithm SHA256).Hash -ne '7cf2ab2cf638d092d8d4ff2bfb1182b3446dac5a8c729d7407c43c5fdcb273b0'){throw 'CollectCapture bootstrap checksum mismatch'};& ([IO.Path]::Combine([IO.Path]::GetTempPath(),'CollectCapture-bootstrap.ps1'))"
+```
+
+The signed-download bootstrap handles WSL 2, a per-user Docker Desktop install, repository download, private environment-file creation, Cloudflare Tunnel creation and DNS routing, Docker startup, local and public health checks, and a **CollectCapture HTTPS** desktop shortcut. It can register itself to resume after a required Windows restart. No Git, Node.js, package manager, repository clone, router port-forward, dashboard tunnel construction, or manual settings-file editing is required.
+
+Some facts cannot be created safely by an installer. Keep these ready when the guided prompts ask for them:
+
+- the CollectFolio browser origin, Supabase project URL, and catalog API URL;
+- a Cloudflare account with a domain already active on Cloudflare DNS, followed by one browser authorization;
+- a Groq or Ollama API key only when selecting that cloud provider.
+
+Docker's license acceptance and Windows administrator approval for first-time WSL enablement also require an explicit click or answer. The bootstrap defaults to local Ollama, which needs no provider account or API key, and automatically selects NVIDIA acceleration when a compatible GPU is detected. On a lower-memory or CPU-only computer, Groq or Ollama Cloud is generally faster.
+
+If this repository is already present on RED PC, double-click [`INSTALL-COLLECTCAPTURE-RED-PC.cmd`](../INSTALL-COLLECTCAPTURE-RED-PC.cmd) for the same verified bootstrap. After installation, use the desktop shortcut or [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd) for routine starts, status, logs, and stops.
+
+## Advanced command-line launcher
+
+The lower-level launcher remains available for scripting. With Docker Desktop already running, choose one provider from PowerShell in the installed CollectCapture directory:
 
 ```powershell
 # Fast cloud vision; this is the launcher default
@@ -25,7 +43,7 @@ The command-line launcher remains available for scripting and advanced use. Inst
 .\red-pc-card-lookups.cmd -Provider Groq -Tunnel
 ```
 
-The first command-line invocation creates the ignored file `.env.card-lookups.red-pc` and stops. Fill in the three required CollectFolio connection values plus `GROQ_API_KEY` or `OLLAMA_API_KEY` for the selected cloud provider, then run the same command again. Local Ollama needs no model-provider key. `-Tunnel` additionally requires the Cloudflare tunnel hostname and connector token described in the [public HTTPS tunnel guide](red-pc-cloudflare-tunnel.md).
+The first lower-level invocation creates the ignored file `.env.card-lookups.red-pc` and stops. Without the bootstrap, fill in the three required CollectFolio connection values plus `GROQ_API_KEY` or `OLLAMA_API_KEY` for the selected cloud provider, then run the same command again. Local Ollama needs no model-provider key. `-Tunnel` auto-detects bootstrap-created local tunnel credentials; the manual remotely managed alternative additionally requires a connector token. Both paths are described in the [public HTTPS tunnel guide](red-pc-cloudflare-tunnel.md).
 
 The local Ollama mode starts Ollama, persists models in a named Docker volume, pulls `qwen3.5:4b`, warms it, and only then starts the API. The first pull is several gigabytes and can take a while. Later starts reuse the model. `-Nvidia` requires Docker Desktop's WSL2 backend, a supported NVIDIA GPU, and a current Windows NVIDIA driver.
 

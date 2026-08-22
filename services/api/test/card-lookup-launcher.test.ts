@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,11 @@ const redPcDoubleClickLauncher = join(
   repositoryRoot,
   "START-COLLECTCAPTURE-HTTPS.cmd",
 );
+const redPcInstaller = join(
+  repositoryRoot,
+  "INSTALL-COLLECTCAPTURE-RED-PC.cmd",
+);
+const redPcBootstrap = join(repositoryRoot, "bootstrap-red-pc.ps1");
 const requiredVariables = [
   "CARD_RECOGNITION_PROVIDER",
   "OPENAI_API_KEY",
@@ -54,16 +60,21 @@ describe("card lookup launcher", () => {
     expect(nvidiaCompose).toContain("gpus: all");
   });
 
-  it("defines an opt-in, token-based Cloudflare Tunnel path", () => {
+  it("defines automatic local and manual token-based Cloudflare Tunnel paths", () => {
     const powerShell = readFileSync(redPcLauncher, "utf8");
     const tunnelCompose = readFileSync(
       join(repositoryRoot, "compose.card-lookups.tunnel.yml"),
+      "utf8",
+    );
+    const localTunnelCompose = readFileSync(
+      join(repositoryRoot, "compose.card-lookups.tunnel-local.yml"),
       "utf8",
     );
     const environmentTemplate = readFileSync(
       join(repositoryRoot, ".env.card-lookups.red-pc.example"),
       "utf8",
     );
+    const gitignore = readFileSync(join(repositoryRoot, ".gitignore"), "utf8");
     const tunnelGuide = readFileSync(
       join(repositoryRoot, "docs/red-pc-cloudflare-tunnel.md"),
       "utf8",
@@ -73,15 +84,65 @@ describe("card lookup launcher", () => {
     expect(powerShell).toContain('"CLOUDFLARE_TUNNEL_HOSTNAME"');
     expect(powerShell).toContain('"CLOUDFLARE_TUNNEL_TOKEN"');
     expect(powerShell).toContain('$arguments += @("-f", $TunnelComposeFile)');
+    expect(powerShell).toContain("$LocalTunnelConfigFile");
+    expect(powerShell).toContain(
+      '$arguments += @("-f", $LocalTunnelComposeFile)',
+    );
     expect(tunnelCompose).toContain("cloudflare/cloudflared:2026.8.2");
     expect(tunnelCompose).toContain("TUNNEL_TOKEN:");
     expect(tunnelCompose).toContain("${CLOUDFLARE_TUNNEL_TOKEN:?");
     expect(tunnelCompose).not.toContain("--token");
     expect(tunnelCompose).not.toContain("ports:");
+    expect(localTunnelCompose).toContain("cloudflare/cloudflared:2026.8.2");
+    expect(localTunnelCompose).toContain("/etc/cloudflared/config.yml");
+    expect(localTunnelCompose).toContain("./.cloudflared:/etc/cloudflared:ro");
+    expect(localTunnelCompose).not.toContain("TUNNEL_TOKEN");
+    expect(localTunnelCompose).not.toContain("ports:");
     expect(environmentTemplate).toContain("CLOUDFLARE_TUNNEL_HOSTNAME=");
     expect(environmentTemplate).toContain("CLOUDFLARE_TUNNEL_TOKEN=");
+    expect(gitignore).toContain(".cloudflared/");
     expect(tunnelGuide).toContain("http://card-lookups:4100");
     expect(tunnelGuide).toContain("No router port-forward");
+  });
+
+  it("provides a verified one-command bootstrap for an empty RED PC", () => {
+    const bootstrap = readFileSync(redPcBootstrap, "utf8");
+    const installer = readFileSync(redPcInstaller, "utf8");
+    const redPcGuide = readFileSync(
+      join(repositoryRoot, "docs/red-pc-card-lookups.md"),
+      "utf8",
+    );
+
+    expect(bootstrap).toContain(
+      "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
+    );
+    expect(bootstrap).toContain('"--accept-license"');
+    expect(bootstrap).toContain('"--user"');
+    expect(bootstrap).toContain("Get-AuthenticodeSignature");
+    expect(bootstrap).toContain("Get-FileHash");
+    expect(bootstrap).toContain("cloudflared-windows-amd64.exe");
+    expect(bootstrap).toContain("tunnel login");
+    expect(bootstrap).toContain("tunnel create");
+    expect(bootstrap).toContain("tunnel route dns");
+    expect(bootstrap).not.toContain("--overwrite-dns");
+    expect(bootstrap).toContain("Read-Host $Prompt -AsSecureString");
+    expect(bootstrap).toContain("RunOnce");
+    expect(bootstrap).toContain("Invoke-RestMethod");
+    expect(bootstrap).toContain("CollectCapture HTTPS.lnk");
+    expect(bootstrap).not.toContain("CLOUDFLARE_TUNNEL_TOKEN=");
+
+    const checksum = installer.match(/BOOTSTRAP_SHA256=([a-f0-9]{64})/i)?.[1];
+    expect(checksum).toMatch(/^[a-f0-9]{64}$/i);
+    expect(checksum).toBe(createHash("sha256").update(bootstrap).digest("hex"));
+    expect(installer).toContain(
+      "raw.githubusercontent.com/kaywhy331/CollectCapture",
+    );
+    expect(installer).toContain("Get-FileHash");
+    expect(redPcGuide).toContain("either PowerShell or Command Prompt");
+    expect(redPcGuide).toContain("No Git, Node.js, package manager");
+    expect(redPcGuide).toContain(checksum);
+    const pasteCommand = redPcGuide.match(/^powershell\.exe .*$/m)?.[0];
+    expect(pasteCommand).not.toContain("$");
   });
 
   it("provides a double-click RED PC HTTPS launcher", () => {

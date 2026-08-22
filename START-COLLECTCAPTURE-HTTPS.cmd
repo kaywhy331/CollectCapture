@@ -129,7 +129,8 @@ echo Follow its comments and fill in:
 echo.
 echo   - the CollectFolio connection values;
 echo   - the API key for the cloud provider you plan to use;
-echo   - the Cloudflare tunnel hostname and connector token.
+echo   - the Cloudflare tunnel hostname;
+echo   - a connector token only for a manually managed tunnel.
 echo.
 echo Save and close Notepad to continue to the launcher menu.
 echo This private file is ignored by Git.

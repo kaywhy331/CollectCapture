@@ -21,6 +21,8 @@ $BaseComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.yml"
 $LocalOllamaComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.ollama-local.yml"
 $NvidiaComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.nvidia.yml"
 $TunnelComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.tunnel.yml"
+$LocalTunnelComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.tunnel-local.yml"
+$LocalTunnelConfigFile = Join-Path $RepositoryRoot ".cloudflared\config.yml"
 
 function Get-EnvironmentValue {
   param([Parameter(Mandatory = $true)][string]$Name)
@@ -35,7 +37,17 @@ function Get-EnvironmentValue {
 
 function Assert-DockerDesktop {
   if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw "Docker was not found. Install and start Docker Desktop, then run this command again."
+    $dockerCandidates = @(
+      (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe"),
+      (Join-Path $env:LOCALAPPDATA "Programs\DockerDesktop\resources\bin\docker.exe"),
+      (Join-Path $env:LOCALAPPDATA "Docker\resources\bin\docker.exe")
+    )
+    $dockerPath = $dockerCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($dockerPath) {
+      $env:Path = "$(Split-Path -Parent $dockerPath);$env:Path"
+    } else {
+      throw "Docker was not found. Run bootstrap-red-pc.ps1 or install and start Docker Desktop, then try again."
+    }
   }
   & docker compose version *> $null
   if ($LASTEXITCODE -ne 0) {
@@ -43,7 +55,24 @@ function Assert-DockerDesktop {
   }
   & docker info *> $null
   if ($LASTEXITCODE -ne 0) {
-    throw "Docker Desktop is installed but its engine is not running. Start Docker Desktop and try again."
+    $desktopCandidates = @(
+      (Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"),
+      (Join-Path $env:LOCALAPPDATA "Programs\DockerDesktop\Docker Desktop.exe"),
+      (Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe")
+    )
+    $desktopPath = $desktopCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $desktopPath) {
+      throw "Docker Desktop is installed but its engine is not running, and Docker Desktop.exe could not be found."
+    }
+    Write-Host "Starting Docker Desktop..."
+    Start-Process -FilePath $desktopPath | Out-Null
+    $deadline = [DateTime]::UtcNow.AddMinutes(10)
+    while ([DateTime]::UtcNow -lt $deadline) {
+      Start-Sleep -Seconds 5
+      & docker info *> $null
+      if ($LASTEXITCODE -eq 0) { return }
+    }
+    throw "Docker Desktop did not become ready within 10 minutes."
   }
 }
 
@@ -63,10 +92,10 @@ function Assert-Configuration {
 }
 
 function Assert-TunnelConfiguration {
-  $required = @(
-    "CLOUDFLARE_TUNNEL_HOSTNAME",
-    "CLOUDFLARE_TUNNEL_TOKEN"
-  )
+  $required = @("CLOUDFLARE_TUNNEL_HOSTNAME")
+  if (-not (Test-Path $LocalTunnelConfigFile)) {
+    $required += "CLOUDFLARE_TUNNEL_TOKEN"
+  }
   $missing = $required | Where-Object { -not (Get-EnvironmentValue $_) }
   if ($missing.Count -gt 0) {
     throw "Fill in these settings in $EnvironmentFile and run again: $($missing -join ', ')"
@@ -78,6 +107,29 @@ function Assert-TunnelConfiguration {
     -not $hostname.Contains(".")
   ) {
     throw "CLOUDFLARE_TUNNEL_HOSTNAME must be a DNS hostname such as cards.example.com, without https:// or a path."
+  }
+
+  if (Test-Path $LocalTunnelConfigFile) {
+    $config = Get-Content $LocalTunnelConfigFile -Raw
+    $credentialMatch = [Regex]::Match(
+      $config,
+      '(?m)^\s*credentials-file:\s*/etc/cloudflared/([^/\s]+\.json)\s*$'
+    )
+    if (-not $credentialMatch.Success) {
+      throw "The locally managed tunnel config has no container credential path. Run the RED PC bootstrap again."
+    }
+    $credentialFile = Join-Path (Split-Path $LocalTunnelConfigFile) $credentialMatch.Groups[1].Value
+    if (-not (Test-Path $credentialFile)) {
+      throw "The locally managed tunnel credential is missing: $credentialFile. Run the RED PC bootstrap again."
+    }
+    $escapedHostname = [Regex]::Escape($hostname)
+    if (
+      $config -notmatch "(?m)^\s*-\s+hostname:\s*$escapedHostname\s*$" -or
+      $config -notmatch '(?m)^\s*service:\s*http://card-lookups:4100\s*$' -or
+      $config -notmatch '(?m)^\s*-\s+service:\s*http_status:404\s*$'
+    ) {
+      throw "The locally managed tunnel config does not match $hostname or lacks its safe ingress rules. Run the RED PC bootstrap again."
+    }
   }
 }
 
@@ -97,7 +149,11 @@ function Get-ComposeArguments {
     $arguments += @("-f", $NvidiaComposeFile)
   }
   if ($Tunnel) {
-    $arguments += @("-f", $TunnelComposeFile)
+    if (Test-Path $LocalTunnelConfigFile) {
+      $arguments += @("-f", $LocalTunnelComposeFile)
+    } else {
+      $arguments += @("-f", $TunnelComposeFile)
+    }
   }
   return $arguments
 }
@@ -161,7 +217,11 @@ switch ($Action) {
     if ($Tunnel) {
       $hostname = Get-EnvironmentValue "CLOUDFLARE_TUNNEL_HOSTNAME"
       Write-Host "Cloudflare Tunnel is starting for https://$hostname"
-      Write-Host "Its published application route must target http://card-lookups:4100."
+      if (Test-Path $LocalTunnelConfigFile) {
+        Write-Host "The locally managed route targets http://card-lookups:4100."
+      } else {
+        Write-Host "Its published application route must target http://card-lookups:4100."
+      }
     }
   }
   "Down" {
