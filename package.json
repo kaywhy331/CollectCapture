@@ -13,10 +13,12 @@
     "build": "pnpm -r --if-present run build",
     "build:packages": "pnpm --filter @localclear/domain build && pnpm --filter @localclear/device-protocol build",
     "dev": "pnpm --filter @localclear/api dev",
+    "dev:card-lookups": "pnpm --filter @localclear/api dev:card-lookups",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "security:dependencies": "pnpm run security:verify-patches && pnpm audit --prod",
     "security:verify-patches": "node scripts/verify-patched-image-size.mjs",
+    "start:card-lookups": "pnpm --filter @localclear/api start:card-lookups",
     "test": "pnpm run build:packages && pnpm -r --if-present run test",
     "test:coverage": "pnpm -r --if-present run test:coverage",
     "typecheck": "pnpm run build:packages && pnpm -r --if-present run typecheck"

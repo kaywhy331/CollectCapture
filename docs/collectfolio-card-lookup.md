@@ -19,7 +19,9 @@ OPENAI_API_KEY=<server-only secret>
 OPENAI_MODEL=<reviewed vision-capable model>
 ```
 
-Partial integration configuration is rejected at startup. `COLLECTFOLIO_APP_URL` is added to the exact CORS allowlist. `COLLECTFOLIO_SUPABASE_URL` defines the issuer and default asymmetric JWKS discovery URL; the optional override is useful only for a reviewed custom discovery endpoint. `COLLECTFOLIO_CATALOG_URL` must use HTTPS outside localhost. Existing CollectCapture production configuration requirements continue to apply.
+The recommended deployment is the standalone lookup process, which needs only these values plus host, port, and log level; it does not need a database or any unrelated CollectCapture production configuration. The full API can still expose the same optional route, in which case its existing production requirements also apply. Partial integration configuration is rejected at startup. `COLLECTFOLIO_APP_URL` is added to the exact CORS allowlist. `COLLECTFOLIO_SUPABASE_URL` defines the issuer and default asymmetric JWKS discovery URL; the optional override is useful only for a reviewed custom discovery endpoint. `COLLECTFOLIO_CATALOG_URL` must use HTTPS outside localhost.
+
+Standalone build, container, edge, scaling, qualification, and rollback instructions are in [the deployment runbook](deploy-card-lookups.md).
 
 ## Request and response
 
@@ -67,7 +69,7 @@ Any future persistence, asynchronous enrichment, broader image use, or different
 
 ```sh
 pnpm run build:packages
-pnpm --filter @localclear/api exec vitest run test/card-lookups.test.ts test/auth-config.test.ts --maxWorkers=1
+pnpm --filter @localclear/api exec vitest run test/card-lookup-app.test.ts test/card-lookups.test.ts test/auth-config.test.ts --maxWorkers=1
 pnpm --filter @localclear/api typecheck
 pnpm test
 pnpm typecheck

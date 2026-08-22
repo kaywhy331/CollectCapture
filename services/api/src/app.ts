@@ -4,7 +4,6 @@ import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import {
-  CardLookupRequestSchema,
   InvalidItemTransitionError,
   InvalidPublishingTransitionError,
   type ConnectorEnvironment,
@@ -64,6 +63,7 @@ import {
 } from "./contracts.js";
 import { ApplicationError } from "./errors.js";
 import type { CardLookupHandler } from "./card-lookups.js";
+import { cardLookupHttpPlugin } from "./card-lookup-http.js";
 import { registerHttpObservability } from "./observability.js";
 import type { Repository } from "./repository.js";
 
@@ -332,48 +332,9 @@ export async function buildApp(
   const cardLookupTokenVerifier = options.cardLookupTokenVerifier;
   const cardLookupService = options.cardLookupService;
   if (cardLookupTokenVerifier && cardLookupService) {
-    await app.register(async (cardLookupRoutes) => {
-      const authenticateCardLookup = createAuthenticationHook(
-        cardLookupTokenVerifier,
-      );
-      const checkCardLookupRateLimit = cardLookupRoutes.createRateLimit({
-        max: 30,
-        timeWindow: "1 hour",
-        keyGenerator: (request) =>
-          `collectfolio-card-lookups:${request.principal.userId}`,
-      });
-      cardLookupRoutes.addHook("preHandler", async (request, reply) => {
-        await authenticateCardLookup(request, reply);
-        if (reply.sent) return;
-        const limit = await checkCardLookupRateLimit(request);
-        if (limit.isAllowed) return;
-        reply
-          .header("x-ratelimit-limit", limit.max)
-          .header("x-ratelimit-remaining", limit.remaining)
-          .header("x-ratelimit-reset", limit.ttlInSeconds);
-        if (!limit.isExceeded) return;
-        await reply.code(429).header("retry-after", limit.ttlInSeconds).send({
-          error: "rate_limited",
-          message: "Too many card lookups. Please try again later.",
-        });
-      });
-
-      cardLookupRoutes.post(
-        "/v1/card-lookups",
-        {
-          bodyLimit: 3_000_000,
-        },
-        async (request, reply) => {
-          const input = CardLookupRequestSchema.parse(request.body);
-          const lookup = await cardLookupService.lookup(input, {
-            authorization: request.headers.authorization!,
-          });
-          return reply
-            .header("cache-control", "no-store")
-            .header("pragma", "no-cache")
-            .send({ lookup });
-        },
-      );
+    await app.register(cardLookupHttpPlugin, {
+      tokenVerifier: cardLookupTokenVerifier,
+      service: cardLookupService,
     });
   }
 

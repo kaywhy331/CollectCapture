@@ -1,9 +1,5 @@
 import { buildApp } from "./app.js";
-import {
-  OpenAICardRecognitionProvider,
-  StatelessCardLookupService,
-  TcgcsvCardCatalogProvider,
-} from "./card-lookups.js";
+import { createCardLookupRuntime } from "./card-lookup-app.js";
 import { LocalClearApplication } from "./application.js";
 import { SupabaseAccountLifecycleProvider } from "./account-lifecycle.js";
 import { JwksTokenVerifier, SharedSecretTokenVerifier } from "./auth.js";
@@ -112,31 +108,18 @@ const cardLookupIntegration =
   config.COLLECTFOLIO_CATALOG_URL &&
   config.OPENAI_API_KEY
     ? (() => {
-        const collectFolioIssuer = new URL(
-          "/auth/v1",
-          config.COLLECTFOLIO_SUPABASE_URL,
-        )
-          .toString()
-          .replace(/\/$/, "");
-        return {
-          tokenVerifier: new JwksTokenVerifier({
-            jwksUrl: new URL(
-              config.COLLECTFOLIO_SUPABASE_JWKS_URL ??
-                `${collectFolioIssuer}/.well-known/jwks.json`,
-            ),
-            issuer: collectFolioIssuer,
-            audience: "authenticated",
-          }),
-          service: new StatelessCardLookupService(
-            new OpenAICardRecognitionProvider({
-              apiKey: config.OPENAI_API_KEY,
-              model: config.OPENAI_MODEL,
-            }),
-            new TcgcsvCardCatalogProvider({
-              baseUrl: config.COLLECTFOLIO_CATALOG_URL,
-            }),
-          ),
-        };
+        return createCardLookupRuntime({
+          openAIApiKey: config.OPENAI_API_KEY,
+          openAIModel: config.OPENAI_MODEL,
+          collectFolioSupabaseUrl: config.COLLECTFOLIO_SUPABASE_URL,
+          ...(config.COLLECTFOLIO_SUPABASE_JWKS_URL
+            ? {
+                collectFolioSupabaseJwksUrl:
+                  config.COLLECTFOLIO_SUPABASE_JWKS_URL,
+              }
+            : {}),
+          collectFolioCatalogUrl: config.COLLECTFOLIO_CATALOG_URL,
+        });
       })()
     : null;
 const app = await buildApp({
