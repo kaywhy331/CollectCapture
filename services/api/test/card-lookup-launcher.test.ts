@@ -8,6 +8,10 @@ import { describe, expect, it } from "vitest";
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const launcher = join(repositoryRoot, "scripts/launch-card-lookups.mjs");
 const redPcLauncher = join(repositoryRoot, "scripts/red-pc-card-lookups.ps1");
+const redPcDoubleClickLauncher = join(
+  repositoryRoot,
+  "START-COLLECTCAPTURE-HTTPS.cmd",
+);
 const requiredVariables = [
   "CARD_RECOGNITION_PROVIDER",
   "OPENAI_API_KEY",
@@ -78,6 +82,20 @@ describe("card lookup launcher", () => {
     expect(environmentTemplate).toContain("CLOUDFLARE_TUNNEL_TOKEN=");
     expect(tunnelGuide).toContain("http://card-lookups:4100");
     expect(tunnelGuide).toContain("No router port-forward");
+  });
+
+  it("provides a double-click RED PC HTTPS launcher", () => {
+    const batchFile = readFileSync(redPcDoubleClickLauncher, "utf8");
+
+    expect(batchFile).toContain("CollectCapture HTTPS Launcher");
+    expect(batchFile).toContain("-Provider Groq -Tunnel");
+    expect(batchFile).toContain("-Provider OllamaCloud -Tunnel");
+    expect(batchFile).toContain("-Provider OllamaLocal -Nvidia -Tunnel");
+    expect(batchFile).toContain("-Provider OllamaLocal -Tunnel");
+    expect(batchFile).toContain(".env.card-lookups.red-pc");
+    expect(batchFile).toContain("notepad.exe");
+    expect(batchFile).toContain("-Action Down -Provider Groq");
+    expect(batchFile).not.toContain("CLOUDFLARE_TUNNEL_TOKEN=");
   });
 
   it("documents the one-command and watch-mode entry points", () => {

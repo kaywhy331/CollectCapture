@@ -4,7 +4,9 @@ This Docker Desktop stack runs only CollectCapture's stateless card-lookup API. 
 
 ## Quick start on Windows
 
-Install and start a current Docker Desktop release. From PowerShell in the CollectCapture repository, choose one provider:
+For the easiest setup, open the CollectCapture folder in File Explorer and double-click [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd). On its first run it creates the ignored private settings file, opens that file in Notepad, and then presents a menu for Groq Cloud, Ollama Cloud, or local Ollama. Every start option in this menu includes the stable HTTPS tunnel. The window stays open when setup or startup fails so the error remains visible.
+
+The command-line launcher remains available for scripting and advanced use. Install and start a current Docker Desktop release, then choose one provider from PowerShell in the CollectCapture repository:
 
 ```powershell
 # Fast cloud vision; this is the launcher default
@@ -23,7 +25,7 @@ Install and start a current Docker Desktop release. From PowerShell in the Colle
 .\red-pc-card-lookups.cmd -Provider Groq -Tunnel
 ```
 
-The first invocation creates the ignored file `.env.card-lookups.red-pc` and stops. Fill in the three required CollectFolio connection values plus `GROQ_API_KEY` or `OLLAMA_API_KEY` for the selected cloud provider, then run the same command again. Local Ollama needs no model-provider key. `-Tunnel` additionally requires the Cloudflare tunnel hostname and connector token described in the [public HTTPS tunnel guide](red-pc-cloudflare-tunnel.md).
+The first command-line invocation creates the ignored file `.env.card-lookups.red-pc` and stops. Fill in the three required CollectFolio connection values plus `GROQ_API_KEY` or `OLLAMA_API_KEY` for the selected cloud provider, then run the same command again. Local Ollama needs no model-provider key. `-Tunnel` additionally requires the Cloudflare tunnel hostname and connector token described in the [public HTTPS tunnel guide](red-pc-cloudflare-tunnel.md).
 
 The local Ollama mode starts Ollama, persists models in a named Docker volume, pulls `qwen3.5:4b`, warms it, and only then starts the API. The first pull is several gigabytes and can take a while. Later starts reuse the model. `-Nvidia` requires Docker Desktop's WSL2 backend, a supported NVIDIA GPU, and a current Windows NVIDIA driver.
 

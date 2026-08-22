@@ -25,7 +25,7 @@ The pinned `cloudflare/cloudflared:2026.8.2` image includes Cloudflare's automat
 
 ## Create the named tunnel
 
-1. Run any RED PC launcher command once so it creates the ignored `.env.card-lookups.red-pc` file, then fill in its CollectFolio and provider settings.
+1. Double-click [`START-COLLECTCAPTURE-HTTPS.cmd`](../START-COLLECTCAPTURE-HTTPS.cmd). It creates the ignored `.env.card-lookups.red-pc` file and opens it in Notepad. Fill in its CollectFolio and provider settings, save it, and keep the launcher menu open.
 2. In the Cloudflare dashboard, go to **Networking > Tunnels**, select **Create a tunnel**, and name it something recognizable such as `collectcapture-red-pc`.
 3. Choose the Docker connector instructions. Cloudflare displays a command ending in `--token <TOKEN>`. Copy only the token value into `.env.card-lookups.red-pc`; never commit or send that value to CollectFolio.
 4. Choose the stable hostname you will publish and add these values to the same file:
@@ -37,7 +37,7 @@ CLOUDFLARED_IMAGE=cloudflare/cloudflared:2026.8.2
 COLLECTCAPTURE_BIND_ADDRESS=127.0.0.1
 ```
 
-5. Start the API and connector with the selected vision provider:
+5. In the double-click launcher's menu, choose the selected vision provider. For command-line use, the equivalent is:
 
 ```powershell
 .\red-pc-card-lookups.cmd -Provider Groq -Tunnel
