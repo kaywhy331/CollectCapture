@@ -11,6 +11,7 @@ coverage/
 .env.*
 !.env.example
 !.env.card-lookups.example
+!.env.card-lookups.red-pc.example
 *.log
 *.tsbuildinfo
 .DS_Store

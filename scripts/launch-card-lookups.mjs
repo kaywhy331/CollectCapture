@@ -11,12 +11,15 @@ const defaultEnvironmentFile = resolve(
   repositoryRoot,
   ".env.card-lookups.local",
 );
-const requiredVariables = [
-  "OPENAI_API_KEY",
+const sharedRequiredVariables = [
   "COLLECTFOLIO_APP_URL",
   "COLLECTFOLIO_SUPABASE_URL",
   "COLLECTFOLIO_CATALOG_URL",
 ];
+const providerSecret = {
+  openai: "OPENAI_API_KEY",
+  groq: "GROQ_API_KEY",
+};
 
 let activeChild;
 let shutdownSignal;
@@ -137,6 +140,30 @@ async function main() {
     return 1;
   }
 
+  const provider = process.env.CARD_RECOGNITION_PROVIDER?.trim() || "openai";
+  if (!["openai", "ollama", "groq"].includes(provider)) {
+    console.error(`Unsupported CARD_RECOGNITION_PROVIDER: ${provider}`);
+    return 1;
+  }
+  const ollamaCloudKey =
+    provider === "ollama" &&
+    (() => {
+      try {
+        return (
+          new URL(process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434")
+            .hostname === "ollama.com"
+        );
+      } catch {
+        return false;
+      }
+    })()
+      ? "OLLAMA_API_KEY"
+      : undefined;
+  const requiredVariables = [
+    ...sharedRequiredVariables,
+    ...(providerSecret[provider] ? [providerSecret[provider]] : []),
+    ...(ollamaCloudKey ? [ollamaCloudKey] : []),
+  ];
   const missing = requiredVariables.filter(
     (name) => !process.env[name]?.trim(),
   );

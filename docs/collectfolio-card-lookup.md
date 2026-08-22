@@ -8,18 +8,24 @@ The route is absent unless its dedicated verifier and service are both configure
 
 ## Configuration
 
-Configure the following as one group:
+Configure the shared boundary plus one recognition provider:
 
 ```text
 COLLECTFOLIO_APP_URL=https://<exact-collectfolio-origin>
 COLLECTFOLIO_SUPABASE_URL=https://<collectfolio-project>.supabase.co
 COLLECTFOLIO_SUPABASE_JWKS_URL=             # optional custom discovery URL
 COLLECTFOLIO_CATALOG_URL=https://<collectfolio-private-catalog-origin>
-OPENAI_API_KEY=<server-only secret>
+CARD_RECOGNITION_PROVIDER=openai|ollama|groq
+OPENAI_API_KEY=<required only when provider=openai>
 OPENAI_MODEL=<reviewed vision-capable model>
+OLLAMA_BASE_URL=http://127.0.0.1:11434|https://ollama.com
+OLLAMA_API_KEY=<required only for direct Ollama Cloud>
+OLLAMA_MODEL=<reviewed vision-capable model>
+GROQ_API_KEY=<required only when provider=groq>
+GROQ_MODEL=qwen/qwen3.6-27b
 ```
 
-The recommended deployment is the standalone lookup process, which needs only these values plus host, port, and log level; it does not need a database or any unrelated CollectCapture production configuration. The full API can still expose the same optional route, in which case its existing production requirements also apply. Partial integration configuration is rejected at startup. `COLLECTFOLIO_APP_URL` is added to the exact CORS allowlist. `COLLECTFOLIO_SUPABASE_URL` defines the issuer and default asymmetric JWKS discovery URL; the optional override is useful only for a reviewed custom discovery endpoint. `COLLECTFOLIO_CATALOG_URL` must use HTTPS outside localhost.
+The recommended standalone process needs only these values plus host, port, and log level; it does not need a database or unrelated CollectCapture production configuration. Its selected provider is fail-closed. The full API can still expose the same optional route with its existing production requirements and OpenAI configuration. `COLLECTFOLIO_APP_URL` is added to the exact CORS allowlist. `COLLECTFOLIO_SUPABASE_URL` defines the issuer and default asymmetric JWKS discovery URL; the optional override supports a reviewed custom or Docker-host discovery endpoint. `COLLECTFOLIO_CATALOG_URL` must use HTTPS outside loopback or `host.docker.internal`.
 
 Standalone build, container, edge, scaling, qualification, and rollback instructions are in [the deployment runbook](deploy-card-lookups.md).
 
@@ -36,7 +42,7 @@ The endpoint requires `Authorization: Bearer <CollectFolio Supabase JWT>`, accep
 }
 ```
 
-The decoded JPEG, PNG, or WebP must be at most 2 MiB and its declared type must match its bytes. The service computes the content SHA-256 before recognition. When `query` is empty, the configured OpenAI model produces conservative structured visible-text evidence; when it is present, provider recognition is skipped and the query becomes the evidence. Each bounded query is sent to the private CollectFolio `catalog/search` endpoint with the same bearer token.
+The decoded JPEG, PNG, or WebP must be at most 2 MiB and its declared type must match its bytes. The service computes the content SHA-256 before recognition. When `query` is empty, the configured OpenAI, Ollama, or Groq model produces conservative structured visible-text evidence; when it is present, provider recognition is skipped and the query becomes the evidence. Each bounded query is sent to the private CollectFolio `catalog/search` endpoint with the same bearer token.
 
 The response is cache-disabled and has this shape:
 
@@ -59,17 +65,17 @@ Candidates contain identity metadata and an exact TCGCSV `(categoryId, groupId, 
 - CollectFolio sends a Canvas-reencoded crop, never the full source photo.
 - This route does not persist the crop in PostgreSQL, Supabase Storage, filesystem storage, application cache, or domain records.
 - Authorization and request bodies are redacted from structured logs. Do not add body logging or error telemetry containing the data URL.
-- OpenAI Responses storage is disabled with `store: false`. Provider processing still follows the API account's data controls and applicable abuse-monitoring rules; see [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data#default-usage-policies-by-endpoint).
-- Recognition is bounded to 15 seconds with SDK retries disabled. All catalog attempts share a 14-second deadline, each response is capped at 8 MiB, and the browser independently aborts after 30 seconds.
+- OpenAI Responses storage is disabled with `store: false`. Local Ollama inference remains on the configured host. Ollama Cloud and Groq process the crop under their account and provider data controls; provider selection therefore changes the external privacy boundary.
+- OpenAI recognition is bounded to 15 seconds; standalone Groq defaults to 60 seconds and Ollama to 120 seconds. Direct Ollama/Groq HTTP responses are capped at 512 KiB. All catalog attempts share a 14-second deadline, each response is capped at 8 MiB, and the browser independently aborts after 30 seconds.
 - The result's `imageRetained: false` field is a mandatory service assertion, not a claim that an external provider has zero retention.
 
-Any future persistence, asynchronous enrichment, broader image use, or different provider requires a new contract version, privacy review, retention disclosure, and CollectFolio UI approval before rollout.
+Any future persistence, asynchronous enrichment, broader image use, or provider outside the reviewed OpenAI/Ollama/Groq adapters requires a new contract version, privacy review, retention disclosure, and CollectFolio UI approval before rollout.
 
 ## Verification
 
 ```sh
 pnpm run build:packages
-pnpm --filter @localclear/api exec vitest run test/card-lookup-app.test.ts test/card-lookups.test.ts test/auth-config.test.ts --maxWorkers=1
+pnpm --filter @localclear/api exec vitest run test/card-lookup-app.test.ts test/card-lookups.test.ts test/card-recognition-qualification.test.ts test/auth-config.test.ts --maxWorkers=1
 pnpm --filter @localclear/api typecheck
 pnpm test
 pnpm typecheck

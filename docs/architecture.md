@@ -33,7 +33,7 @@ LocalClear uses a pnpm monorepo with four independently deployable surfaces:
 7. A verified platform ID or URL creates/updates the platform listing.
 8. Closing an item creates capable delist/mark-sold jobs plus one consolidated task for manual exceptions.
 
-The CollectFolio lookup lane is isolated from that item lifecycle: CollectFolio sends one browser-reencoded crop and bearer token, the API obtains structured visible-card evidence, forwards the bearer to CollectFolio's private TCGCSV catalog, and returns unselected identity suggestions. It creates no item, listing, media object, or database row. The crop is held only for the request and external recognition call; response storage is disabled at the recognition provider, while the provider's configured retention/data controls remain an external trust boundary.
+The CollectFolio lookup lane is isolated from that item lifecycle: CollectFolio sends one browser-reencoded crop and bearer token, the API obtains structured visible-card evidence, forwards the bearer to CollectFolio's private TCGCSV catalog, and returns unselected identity suggestions. It creates no item, listing, media object, or database row. The crop is held only for the request and configured recognition call. OpenAI request storage is disabled explicitly; local Ollama stays on its configured host; cloud-provider retention and data controls remain an external trust boundary.
 
 Server-side API/import jobs are claimed with bounded leases by a horizontally safe dispatcher. Android jobs are pulled only by the paired device, and only signed device receipts may advance them. User routes can resume or cancel a job but cannot forge successful transitions. Notifications use a separately leased outbox with bounded retry.
 

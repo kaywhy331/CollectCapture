@@ -23,6 +23,7 @@ import {
 
 const MAX_CARD_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_CATALOG_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_RECOGNITION_RESPONSE_BYTES = 512 * 1024;
 const RECOGNITION_TIMEOUT_MS = 15_000;
 const CATALOG_TOTAL_TIMEOUT_MS = 14_000;
 
@@ -131,6 +132,213 @@ export class OpenAICardRecognitionProvider implements CardRecognitionProvider {
   }
 }
 
+interface OllamaCardRecognitionOptions {
+  baseUrl: string | URL;
+  model: string;
+  apiKey?: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+const OllamaChatResponseSchema = z
+  .object({
+    message: z.object({ content: z.string().min(1) }).passthrough(),
+  })
+  .passthrough();
+
+export class OllamaCardRecognitionProvider implements CardRecognitionProvider {
+  readonly providerName = "ollama";
+  readonly model: string;
+  readonly #baseUrl: URL;
+  readonly #fetch: typeof fetch;
+  readonly #apiKey: string | undefined;
+  readonly #timeoutMs: number;
+
+  constructor(options: OllamaCardRecognitionOptions) {
+    this.model = options.model.trim();
+    if (!this.model) throw new Error("The Ollama model must not be empty");
+    this.#baseUrl = validatedOllamaBaseUrl(options.baseUrl);
+    this.#fetch = options.fetchImpl ?? fetch;
+    this.#apiKey = options.apiKey?.trim();
+    this.#timeoutMs = options.timeoutMs ?? 120_000;
+    if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1_000) {
+      throw new Error("The Ollama timeout must be at least 1000 milliseconds");
+    }
+  }
+
+  async recognize(input: {
+    imageDataUrl: string;
+    categoryHint: CardLookupCategory;
+  }): Promise<CardRecognition> {
+    try {
+      const encodedImage = encodedCardImage(input.imageDataUrl);
+      const response = await this.#fetch(new URL("api/chat", this.#baseUrl), {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          ...(this.#apiKey ? { authorization: `Bearer ${this.#apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model: this.model,
+          stream: false,
+          format: z.toJSONSchema(VisionRecognitionSchema),
+          options: { temperature: 0 },
+          messages: [
+            { role: "system", content: CARD_RECOGNITION_PROMPT },
+            {
+              role: "user",
+              content: recognitionInstruction(input.categoryHint),
+              images: [encodedImage],
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+      const responseText = await readBoundedText(
+        response,
+        MAX_RECOGNITION_RESPONSE_BYTES,
+        "The recognition provider response exceeded its size limit",
+      );
+      if (!response.ok) {
+        throw new Error(
+          `The recognition provider returned HTTP ${response.status}`,
+        );
+      }
+      const envelope = OllamaChatResponseSchema.parse(JSON.parse(responseText));
+      const recognition = VisionRecognitionSchema.parse(
+        JSON.parse(envelope.message.content),
+      );
+      return CardRecognitionSchema.parse({
+        ...recognition,
+        source: "vision",
+        provider: this.providerName,
+        model: this.model,
+      });
+    } catch (error) {
+      throw new ApplicationError(
+        502,
+        "card_recognition_failed",
+        "CollectCapture could not recognize this card image",
+        error instanceof Error ? { cause: error.name } : undefined,
+      );
+    }
+  }
+}
+
+interface GroqCardRecognitionOptions {
+  apiKey: string;
+  model: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+const GroqChatResponseSchema = z
+  .object({
+    choices: z
+      .array(
+        z
+          .object({
+            message: z.object({ content: z.string().min(1) }).passthrough(),
+          })
+          .passthrough(),
+      )
+      .min(1),
+  })
+  .passthrough();
+
+export class GroqCardRecognitionProvider implements CardRecognitionProvider {
+  readonly providerName = "groq";
+  readonly model: string;
+  readonly #apiKey: string;
+  readonly #fetch: typeof fetch;
+  readonly #timeoutMs: number;
+
+  constructor(options: GroqCardRecognitionOptions) {
+    this.model = options.model.trim();
+    this.#apiKey = options.apiKey.trim();
+    this.#fetch = options.fetchImpl ?? fetch;
+    this.#timeoutMs = options.timeoutMs ?? 60_000;
+    if (!this.model) throw new Error("The Groq model must not be empty");
+    if (!this.#apiKey) throw new Error("The Groq API key must not be empty");
+    if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1_000) {
+      throw new Error("The Groq timeout must be at least 1000 milliseconds");
+    }
+  }
+
+  async recognize(input: {
+    imageDataUrl: string;
+    categoryHint: CardLookupCategory;
+  }): Promise<CardRecognition> {
+    try {
+      const response = await this.#fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${this.#apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: this.model,
+            stream: false,
+            temperature: 0,
+            max_completion_tokens: 2_048,
+            ...(this.model === "qwen/qwen3.6-27b"
+              ? { reasoning_effort: "none" }
+              : {}),
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: `${CARD_RECOGNITION_PROMPT}\n\n${recognitionInstruction(input.categoryHint)}\n\nReturn a JSON object matching this JSON Schema exactly:\n${JSON.stringify(z.toJSONSchema(VisionRecognitionSchema))}`,
+                  },
+                  {
+                    type: "image_url",
+                    image_url: { url: input.imageDataUrl },
+                  },
+                ],
+              },
+            ],
+          }),
+          signal: AbortSignal.timeout(this.#timeoutMs),
+        },
+      );
+      const responseText = await readBoundedText(
+        response,
+        MAX_RECOGNITION_RESPONSE_BYTES,
+        "The recognition provider response exceeded its size limit",
+      );
+      if (!response.ok) {
+        throw new Error(
+          `The recognition provider returned HTTP ${response.status}`,
+        );
+      }
+      const envelope = GroqChatResponseSchema.parse(JSON.parse(responseText));
+      const recognition = VisionRecognitionSchema.parse(
+        JSON.parse(envelope.choices[0]!.message.content),
+      );
+      return CardRecognitionSchema.parse({
+        ...recognition,
+        source: "vision",
+        provider: this.providerName,
+        model: this.model,
+      });
+    } catch (error) {
+      throw new ApplicationError(
+        502,
+        "card_recognition_failed",
+        "CollectCapture could not recognize this card image",
+        error instanceof Error ? { cause: error.name } : undefined,
+      );
+    }
+  }
+}
+
 export interface CardCatalogSearchResult {
   candidates: CardLookupCandidate[];
   warnings: string[];
@@ -158,7 +366,9 @@ export class TcgcsvCardCatalogProvider implements CardCatalogProvider {
     this.#baseUrl = new URL(options.baseUrl);
     if (
       this.#baseUrl.protocol !== "https:" &&
-      !["localhost", "127.0.0.1", "[::1]"].includes(this.#baseUrl.hostname)
+      !["localhost", "127.0.0.1", "[::1]", "host.docker.internal"].includes(
+        this.#baseUrl.hostname,
+      )
     ) {
       throw new Error("The card catalog URL must use HTTPS");
     }
@@ -572,6 +782,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function readBoundedText(
   response: Response,
   maximumBytes: number,
+  sizeErrorMessage = "The card catalog response exceeded its size limit",
 ): Promise<string> {
   if (!response.body) return "";
   const reader = response.body.getReader();
@@ -584,7 +795,7 @@ async function readBoundedText(
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > maximumBytes) {
-        throw new Error("The card catalog response exceeded its size limit");
+        throw new Error(sizeErrorMessage);
       }
       text += decoder.decode(value, { stream: true });
     }
@@ -595,4 +806,51 @@ async function readBoundedText(
   } finally {
     reader.releaseLock();
   }
+}
+
+function validatedOllamaBaseUrl(value: string | URL): URL {
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("The Ollama URL must use HTTP or HTTPS");
+  }
+  if (
+    url.protocol === "http:" &&
+    ![
+      "localhost",
+      "127.0.0.1",
+      "[::1]",
+      "host.docker.internal",
+      "ollama",
+    ].includes(url.hostname)
+  ) {
+    throw new Error("The Ollama URL must use HTTPS outside the local machine");
+  }
+  if (
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    (url.pathname !== "/" && url.pathname !== "")
+  ) {
+    throw new Error(
+      "The Ollama URL must be an origin without credentials, a path, query, or fragment",
+    );
+  }
+  if (!url.pathname.endsWith("/")) url.pathname += "/";
+  return url;
+}
+
+function encodedCardImage(imageDataUrl: string): string {
+  const match =
+    /^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(
+      imageDataUrl,
+    );
+  if (!match?.[1]) throw new Error("The card image data URL is invalid");
+  return match[1];
+}
+
+function recognitionInstruction(categoryHint: CardLookupCategory): string {
+  return categoryHint === "all"
+    ? "Recognize this card for catalog lookup."
+    : `Recognize this card for ${categoryHint} catalog lookup. Treat the category as a user hint, not verified evidence.`;
 }

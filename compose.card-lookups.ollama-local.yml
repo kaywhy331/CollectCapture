@@ -1,0 +1,50 @@
+services:
+  card-lookups:
+    environment:
+      CARD_RECOGNITION_PROVIDER: ollama
+      OLLAMA_API_KEY: ""
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_LOCAL_MODEL:-qwen3.5:4b}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-120000}
+    depends_on:
+      ollama-model:
+        condition: service_completed_successfully
+
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null 2>&1
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 30
+    restart: unless-stopped
+
+  ollama-model:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_LOCAL_MODEL:-qwen3.5:4b}
+    entrypoint:
+      - /bin/sh
+      - -eu
+      - -c
+    command:
+      - |
+        ollama pull "$${OLLAMA_MODEL}"
+        ollama run "$${OLLAMA_MODEL}" "Reply with READY only." >/dev/null
+    restart: "no"
+
+volumes:
+  ollama-models:

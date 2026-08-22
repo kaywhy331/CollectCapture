@@ -7,6 +7,8 @@ import type OpenAI from "openai";
 import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import {
+  GroqCardRecognitionProvider,
+  OllamaCardRecognitionProvider,
   OpenAICardRecognitionProvider,
   StatelessCardLookupService,
   TcgcsvCardCatalogProvider,
@@ -88,6 +90,182 @@ describe("OpenAI card recognition", () => {
     expect(parse).toHaveBeenCalledWith(
       expect.objectContaining({ store: false, model: "deterministic-v1" }),
     );
+  });
+});
+
+describe("Ollama card recognition", () => {
+  it("sends a base64 vision request with a strict structured-output schema", async () => {
+    let requestedUrl = "";
+    let authorization = "";
+    let requestBody: Record<string, any> = {};
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "https://ollama.com",
+      apiKey: "ollama-cloud-test-key",
+      model: "qwen3.5:397b",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        authorization = new Headers(init?.headers).get("authorization") ?? "";
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            message: {
+              role: "assistant",
+              content: JSON.stringify({
+                category: "pokemon",
+                name: "Charizard ex",
+                setName: "Obsidian Flames",
+                collectorNumber: "223/197",
+                language: "en",
+                visibleText: ["Charizard ex", "223/197"],
+                queries: ["Charizard ex 223/197"],
+                confidence: 0.91,
+              }),
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "pokemon" }),
+    ).resolves.toMatchObject({
+      source: "vision",
+      provider: "ollama",
+      model: "qwen3.5:397b",
+      name: "Charizard ex",
+    });
+    expect(requestedUrl).toBe("https://ollama.com/api/chat");
+    expect(authorization).toBe("Bearer ollama-cloud-test-key");
+    expect(requestBody).toMatchObject({
+      model: "qwen3.5:397b",
+      stream: false,
+      options: { temperature: 0 },
+      messages: [
+        { role: "system" },
+        {
+          role: "user",
+          content: expect.stringContaining("pokemon"),
+          images: [pngBase64],
+        },
+      ],
+      format: {
+        type: "object",
+        additionalProperties: false,
+        required: expect.arrayContaining([
+          "category",
+          "name",
+          "collectorNumber",
+          "queries",
+        ]),
+      },
+    });
+  });
+
+  it("maps malformed model output to the existing safe provider error", async () => {
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({ message: { content: "not valid json" } }),
+        ),
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_failed",
+      message: "CollectCapture could not recognize this card image",
+    });
+  });
+
+  it("rejects an Ollama URL that could redirect recognition requests", () => {
+    expect(
+      () =>
+        new OllamaCardRecognitionProvider({
+          baseUrl: "http://ollama:11434/unreviewed/path",
+          model: "qwen3-vl:4b",
+        }),
+    ).toThrow("must be an origin");
+    expect(
+      () =>
+        new OllamaCardRecognitionProvider({
+          baseUrl: "http://remote-ollama.example.test",
+          model: "qwen3.5:4b",
+        }),
+    ).toThrow("must use HTTPS outside the local machine");
+  });
+});
+
+describe("Groq card recognition", () => {
+  it("uses the current vision chat endpoint with JSON mode and local validation", async () => {
+    let requestedUrl = "";
+    let authorization = "";
+    let requestBody: Record<string, any> = {};
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "qwen/qwen3.6-27b",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        authorization = new Headers(init?.headers).get("authorization") ?? "";
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: JSON.stringify({
+                    category: "magic",
+                    name: "Black Lotus",
+                    setName: null,
+                    collectorNumber: null,
+                    language: "en",
+                    visibleText: ["Black Lotus"],
+                    queries: ["Black Lotus"],
+                    confidence: 0.88,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "magic" }),
+    ).resolves.toMatchObject({
+      provider: "groq",
+      model: "qwen/qwen3.6-27b",
+      name: "Black Lotus",
+    });
+    expect(requestedUrl).toBe(
+      "https://api.groq.com/openai/v1/chat/completions",
+    );
+    expect(authorization).toBe("Bearer groq-test-key");
+    expect(requestBody).toMatchObject({
+      model: "qwen/qwen3.6-27b",
+      stream: false,
+      temperature: 0,
+      reasoning_effort: "none",
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: expect.stringMatching(/magic[\s\S]+JSON Schema/),
+            },
+            { type: "image_url", image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+    });
   });
 });
 
@@ -195,6 +373,15 @@ describe("stateless card lookup", () => {
 });
 
 describe("TCGCSV catalog lookup", () => {
+  it("allows Docker Desktop's host gateway for a local catalog", () => {
+    expect(
+      () =>
+        new TcgcsvCardCatalogProvider({
+          baseUrl: "http://host.docker.internal:8787",
+        }),
+    ).not.toThrow();
+  });
+
   it("rejects catalog base URLs that could misdirect the bearer token", () => {
     expect(
       () =>

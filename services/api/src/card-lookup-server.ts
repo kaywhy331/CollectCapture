@@ -6,9 +6,7 @@ import { readCardLookupConfig } from "./card-lookup-config.js";
 import { REDACTED_LOG_PATHS } from "./observability.js";
 
 const config = readCardLookupConfig();
-const runtime = createCardLookupRuntime({
-  openAIApiKey: config.OPENAI_API_KEY,
-  openAIModel: config.OPENAI_MODEL,
+const sharedRuntimeOptions = {
   collectFolioSupabaseUrl: config.COLLECTFOLIO_SUPABASE_URL,
   ...(config.COLLECTFOLIO_SUPABASE_JWKS_URL
     ? {
@@ -16,7 +14,33 @@ const runtime = createCardLookupRuntime({
       }
     : {}),
   collectFolioCatalogUrl: config.COLLECTFOLIO_CATALOG_URL,
-});
+};
+const runtime =
+  config.CARD_RECOGNITION_PROVIDER === "ollama"
+    ? createCardLookupRuntime({
+        ...sharedRuntimeOptions,
+        recognitionProvider: "ollama",
+        ollamaBaseUrl: config.OLLAMA_BASE_URL,
+        ...(config.OLLAMA_API_KEY
+          ? { ollamaApiKey: config.OLLAMA_API_KEY }
+          : {}),
+        ollamaModel: config.OLLAMA_MODEL,
+        ollamaTimeoutMs: config.OLLAMA_TIMEOUT_MS,
+      })
+    : config.CARD_RECOGNITION_PROVIDER === "groq"
+      ? createCardLookupRuntime({
+          ...sharedRuntimeOptions,
+          recognitionProvider: "groq",
+          groqApiKey: config.GROQ_API_KEY!,
+          groqModel: config.GROQ_MODEL,
+          groqTimeoutMs: config.GROQ_TIMEOUT_MS,
+        })
+      : createCardLookupRuntime({
+          ...sharedRuntimeOptions,
+          recognitionProvider: "openai",
+          openAIApiKey: config.OPENAI_API_KEY!,
+          openAIModel: config.OPENAI_MODEL,
+        });
 const app = await buildCardLookupApp({
   ...runtime,
   allowedOrigin: new URL(config.COLLECTFOLIO_APP_URL).origin,

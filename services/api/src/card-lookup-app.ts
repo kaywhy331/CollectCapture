@@ -9,6 +9,8 @@ import { ZodError } from "zod";
 import { JwksTokenVerifier, type TokenVerifier } from "./auth.js";
 import { cardLookupHttpPlugin } from "./card-lookup-http.js";
 import {
+  GroqCardRecognitionProvider,
+  OllamaCardRecognitionProvider,
   OpenAICardRecognitionProvider,
   StatelessCardLookupService,
   TcgcsvCardCatalogProvider,
@@ -17,13 +19,33 @@ import {
 import { ApplicationError } from "./errors.js";
 import { registerHttpObservability } from "./observability.js";
 
-export interface CardLookupRuntimeOptions {
-  openAIApiKey: string;
-  openAIModel: string;
+interface CardLookupRuntimeBaseOptions {
   collectFolioSupabaseUrl: string;
   collectFolioSupabaseJwksUrl?: string;
   collectFolioCatalogUrl: string;
 }
+
+export type CardLookupRuntimeOptions = CardLookupRuntimeBaseOptions &
+  (
+    | {
+        recognitionProvider?: "openai";
+        openAIApiKey: string;
+        openAIModel: string;
+      }
+    | {
+        recognitionProvider: "ollama";
+        ollamaBaseUrl: string;
+        ollamaApiKey?: string;
+        ollamaModel: string;
+        ollamaTimeoutMs: number;
+      }
+    | {
+        recognitionProvider: "groq";
+        groqApiKey: string;
+        groqModel: string;
+        groqTimeoutMs: number;
+      }
+  );
 
 export interface CardLookupRuntime {
   tokenVerifier: TokenVerifier;
@@ -46,10 +68,23 @@ export function createCardLookupRuntime(
       audience: "authenticated",
     }),
     service: new StatelessCardLookupService(
-      new OpenAICardRecognitionProvider({
-        apiKey: options.openAIApiKey,
-        model: options.openAIModel,
-      }),
+      options.recognitionProvider === "ollama"
+        ? new OllamaCardRecognitionProvider({
+            baseUrl: options.ollamaBaseUrl,
+            ...(options.ollamaApiKey ? { apiKey: options.ollamaApiKey } : {}),
+            model: options.ollamaModel,
+            timeoutMs: options.ollamaTimeoutMs,
+          })
+        : options.recognitionProvider === "groq"
+          ? new GroqCardRecognitionProvider({
+              apiKey: options.groqApiKey,
+              model: options.groqModel,
+              timeoutMs: options.groqTimeoutMs,
+            })
+          : new OpenAICardRecognitionProvider({
+              apiKey: options.openAIApiKey,
+              model: options.openAIModel,
+            }),
       new TcgcsvCardCatalogProvider({
         baseUrl: options.collectFolioCatalogUrl,
       }),
