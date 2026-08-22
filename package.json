@@ -16,6 +16,7 @@
     "dev:card-lookups": "pnpm --filter @localclear/api dev:card-lookups",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "launch:card-lookups": "node scripts/launch-card-lookups.mjs",
     "security:dependencies": "pnpm run security:verify-patches && pnpm audit --prod",
     "security:verify-patches": "node scripts/verify-patched-image-size.mjs",
     "start:card-lookups": "pnpm --filter @localclear/api start:card-lookups",

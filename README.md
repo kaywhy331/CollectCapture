@@ -19,6 +19,8 @@ Copy `.env.example` to an untracked environment file and supply local Supabase c
 
 The CollectFolio integration exposes a separately authenticated, stateless `POST /v1/card-lookups` route. Its recommended standalone process runs without PostgreSQL or the rest of the LocalClear production configuration; the full API can also register the same route optionally. Configure its exact browser origin, CollectFolio Supabase issuer/JWKS, private catalog URL, and OpenAI key as one fail-closed group. It accepts only a bounded crop, does not persist that crop, returns identity suggestions without prices or automatic approval, and never uses the LocalClear/CollectCapture application issuer as an authentication fallback. The [service contract](docs/collectfolio-card-lookup.md) and [deployment runbook](docs/deploy-card-lookups.md) cover configuration, privacy, container deployment, and qualification.
 
+To launch that API locally, copy `.env.card-lookups.example` to `.env.card-lookups.local`, fill in the values, and run `pnpm launch:card-lookups`. Add `-- --watch` for source watch mode. The launcher loads the dedicated environment file, checks required settings, builds the needed workspace packages, and starts only the standalone lookup server.
+
 The Android 11+ companion lives in `apps/seller-hub` and builds with its checked-in, checksum-pinned Gradle wrapper. It requires the base64 DER public half of the same P-256 command key described in its README.
 
 CI also applies the production migration to PostgreSQL 16 and executes `supabase/tests/rls.sql`, then compiles/tests the Android app and runs formatting, type, test, web, API, dependency, secret, CodeQL, and SBOM gates.

@@ -22,11 +22,14 @@ No `DATABASE_URL`, CollectCapture Supabase credential, service-role key, storage
 
 ## Run from the workspace
 
-For local development, loopback HTTP URLs are accepted:
+For the easiest local launch, copy the dedicated template, fill in its empty and local-service values, and run one command. Loopback HTTP URLs are accepted:
 
 ```sh
-pnpm dev:card-lookups
+cp .env.card-lookups.example .env.card-lookups.local
+pnpm launch:card-lookups
 ```
+
+The launcher loads `.env.card-lookups.local`, validates the required settings, builds the workspace packages and API, then starts the standalone server. Use `pnpm launch:card-lookups -- --watch` for TypeScript watch mode, or `-- --env-file /secure/path/card-lookups.env` to load a different file. Exported environment values take precedence. The lower-level `pnpm dev:card-lookups` command remains available when the environment is already exported and the workspace packages are built.
 
 For a built workspace:
 
