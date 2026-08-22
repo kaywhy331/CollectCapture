@@ -8,6 +8,8 @@ param(
 
   [switch]$Nvidia,
 
+  [switch]$Tunnel,
+
   [string]$QualificationDirectory = ""
 )
 
@@ -18,6 +20,7 @@ $EnvironmentTemplate = Join-Path $RepositoryRoot ".env.card-lookups.red-pc.examp
 $BaseComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.yml"
 $LocalOllamaComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.ollama-local.yml"
 $NvidiaComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.nvidia.yml"
+$TunnelComposeFile = Join-Path $RepositoryRoot "compose.card-lookups.tunnel.yml"
 
 function Get-EnvironmentValue {
   param([Parameter(Mandatory = $true)][string]$Name)
@@ -59,6 +62,25 @@ function Assert-Configuration {
   }
 }
 
+function Assert-TunnelConfiguration {
+  $required = @(
+    "CLOUDFLARE_TUNNEL_HOSTNAME",
+    "CLOUDFLARE_TUNNEL_TOKEN"
+  )
+  $missing = $required | Where-Object { -not (Get-EnvironmentValue $_) }
+  if ($missing.Count -gt 0) {
+    throw "Fill in these settings in $EnvironmentFile and run again: $($missing -join ', ')"
+  }
+
+  $hostname = Get-EnvironmentValue "CLOUDFLARE_TUNNEL_HOSTNAME"
+  if (
+    [Uri]::CheckHostName($hostname) -ne [System.UriHostNameType]::Dns -or
+    -not $hostname.Contains(".")
+  ) {
+    throw "CLOUDFLARE_TUNNEL_HOSTNAME must be a DNS hostname such as cards.example.com, without https:// or a path."
+  }
+}
+
 function Get-ComposeArguments {
   param([switch]$IncludeEveryService)
 
@@ -73,6 +95,9 @@ function Get-ComposeArguments {
   }
   if ($Nvidia) {
     $arguments += @("-f", $NvidiaComposeFile)
+  }
+  if ($Tunnel) {
+    $arguments += @("-f", $TunnelComposeFile)
   }
   return $arguments
 }
@@ -102,6 +127,10 @@ if ($Nvidia -and $Provider -ne "OllamaLocal") {
   throw "-Nvidia is only used with -Provider OllamaLocal. Cloud providers do not use RED PC's GPU."
 }
 
+if ($Tunnel) {
+  Assert-TunnelConfiguration
+}
+
 Assert-DockerDesktop
 
 switch ($Provider) {
@@ -128,6 +157,11 @@ switch ($Action) {
       $model = Get-EnvironmentValue "OLLAMA_LOCAL_MODEL"
       if (-not $model) { $model = "qwen3.5:4b" }
       Write-Host "The first start downloads and warms $model; watch progress with -Action Logs -Provider OllamaLocal."
+    }
+    if ($Tunnel) {
+      $hostname = Get-EnvironmentValue "CLOUDFLARE_TUNNEL_HOSTNAME"
+      Write-Host "Cloudflare Tunnel is starting for https://$hostname"
+      Write-Host "Its published application route must target http://card-lookups:4100."
     }
   }
   "Down" {

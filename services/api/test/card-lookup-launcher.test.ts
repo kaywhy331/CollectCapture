@@ -50,6 +50,36 @@ describe("card lookup launcher", () => {
     expect(nvidiaCompose).toContain("gpus: all");
   });
 
+  it("defines an opt-in, token-based Cloudflare Tunnel path", () => {
+    const powerShell = readFileSync(redPcLauncher, "utf8");
+    const tunnelCompose = readFileSync(
+      join(repositoryRoot, "compose.card-lookups.tunnel.yml"),
+      "utf8",
+    );
+    const environmentTemplate = readFileSync(
+      join(repositoryRoot, ".env.card-lookups.red-pc.example"),
+      "utf8",
+    );
+    const tunnelGuide = readFileSync(
+      join(repositoryRoot, "docs/red-pc-cloudflare-tunnel.md"),
+      "utf8",
+    );
+
+    expect(powerShell).toContain("[switch]$Tunnel");
+    expect(powerShell).toContain('"CLOUDFLARE_TUNNEL_HOSTNAME"');
+    expect(powerShell).toContain('"CLOUDFLARE_TUNNEL_TOKEN"');
+    expect(powerShell).toContain('$arguments += @("-f", $TunnelComposeFile)');
+    expect(tunnelCompose).toContain("cloudflare/cloudflared:2026.8.2");
+    expect(tunnelCompose).toContain("TUNNEL_TOKEN:");
+    expect(tunnelCompose).toContain("${CLOUDFLARE_TUNNEL_TOKEN:?");
+    expect(tunnelCompose).not.toContain("--token");
+    expect(tunnelCompose).not.toContain("ports:");
+    expect(environmentTemplate).toContain("CLOUDFLARE_TUNNEL_HOSTNAME=");
+    expect(environmentTemplate).toContain("CLOUDFLARE_TUNNEL_TOKEN=");
+    expect(tunnelGuide).toContain("http://card-lookups:4100");
+    expect(tunnelGuide).toContain("No router port-forward");
+  });
+
   it("documents the one-command and watch-mode entry points", () => {
     const result = spawnSync(process.execPath, [launcher, "--help"], {
       cwd: repositoryRoot,

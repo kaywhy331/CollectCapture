@@ -18,9 +18,12 @@ Install and start a current Docker Desktop release. From PowerShell in the Colle
 
 # Private local inference with an NVIDIA GPU
 .\red-pc-card-lookups.cmd -Provider OllamaLocal -Nvidia
+
+# Add a stable public HTTPS endpoint to any provider
+.\red-pc-card-lookups.cmd -Provider Groq -Tunnel
 ```
 
-The first invocation creates the ignored file `.env.card-lookups.red-pc` and stops. Fill in the three required CollectFolio connection values plus `GROQ_API_KEY` or `OLLAMA_API_KEY` for the selected cloud provider, then run the same command again. Local Ollama needs no model-provider key.
+The first invocation creates the ignored file `.env.card-lookups.red-pc` and stops. Fill in the three required CollectFolio connection values plus `GROQ_API_KEY` or `OLLAMA_API_KEY` for the selected cloud provider, then run the same command again. Local Ollama needs no model-provider key. `-Tunnel` additionally requires the Cloudflare tunnel hostname and connector token described in the [public HTTPS tunnel guide](red-pc-cloudflare-tunnel.md).
 
 The local Ollama mode starts Ollama, persists models in a named Docker volume, pulls `qwen3.5:4b`, warms it, and only then starts the API. The first pull is several gigabytes and can take a while. Later starts reuse the model. `-Nvidia` requires Docker Desktop's WSL2 backend, a supported NVIDIA GPU, and a current Windows NVIDIA driver.
 
@@ -31,6 +34,8 @@ Useful commands retain the provider selection:
 .\red-pc-card-lookups.cmd -Action Logs -Provider OllamaLocal
 .\red-pc-card-lookups.cmd -Action Restart -Provider OllamaCloud
 .\red-pc-card-lookups.cmd -Action Down -Provider OllamaLocal
+.\red-pc-card-lookups.cmd -Action Status -Provider Groq -Tunnel
+.\red-pc-card-lookups.cmd -Action Logs -Provider Groq -Tunnel
 ```
 
 After startup, verify the API:
@@ -81,7 +86,9 @@ The code and mocked tests confirm that all three provider protocols can satisfy 
 
 ## Networking and local services
 
-The API and local Ollama ports bind to `127.0.0.1` by default. This is the safe choice when CollectFolio runs in a browser on RED PC. `COLLECTCAPTURE_BIND_ADDRESS=0.0.0.0` makes port 4100 reachable from the LAN, but it does not add TLS or authentication at the network edge. A hosted HTTPS CollectFolio page also cannot call a plain HTTP LAN endpoint because browsers block mixed content. Use a reviewed HTTPS reverse proxy or tunnel and firewall policy before exposing RED PC.
+The API and local Ollama ports bind to `127.0.0.1` by default. Keep that setting when using `-Tunnel`: the `cloudflared` sidecar reaches the API over Docker's private network, so RED PC needs no public inbound port, router port-forward, or LAN-wide bind. Cloudflare terminates public TLS and forwards to `http://card-lookups:4100` inside the Compose project. See the [Cloudflare Tunnel setup and rollback runbook](red-pc-cloudflare-tunnel.md).
+
+Without the tunnel, `COLLECTCAPTURE_BIND_ADDRESS=0.0.0.0` makes port 4100 reachable from the LAN, but it does not add TLS or network-edge authorization. A hosted HTTPS CollectFolio page also cannot call a plain HTTP LAN endpoint because browsers block mixed content.
 
 Containers resolve host-side services through `host.docker.internal`. For a local catalog, for example, use `http://host.docker.internal:8787`. If local Supabase tokens contain the issuer `http://127.0.0.1:54321/auth/v1`, keep `COLLECTFOLIO_SUPABASE_URL=http://127.0.0.1:54321` for issuer validation and set `COLLECTFOLIO_SUPABASE_JWKS_URL=http://host.docker.internal:54321/auth/v1/.well-known/jwks.json` so the container can fetch keys.
 
