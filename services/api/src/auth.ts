@@ -136,6 +136,90 @@ export class JwksTokenVerifier implements TokenVerifier {
   }
 }
 
+export interface JwksProbeLogger {
+  info(payload: Record<string, unknown>, message: string): void;
+  warn(payload: Record<string, unknown>, message: string): void;
+}
+
+/**
+ * The precondition a legacy HS256 (symmetric) Supabase project violates --
+ * `jwtVerify` against a JWKS can only ever succeed with an asymmetric
+ * (ES256/RS256) signing key, so an empty or unreachable keyset here is
+ * consistent with that misconfiguration, not just a transient outage.
+ */
+export const JWKS_ASYMMETRIC_SIGNING_PRECONDITION =
+  "CollectFolio's Supabase project must use asymmetric JWT signing keys (ES256/RS256); legacy HS256 projects will fail all verification.";
+
+/**
+ * Fetches the configured JWKS endpoint once, non-fatally (G9): logs the
+ * discovered key count and algorithms at `info`, or a `warn` naming
+ * {@link JWKS_ASYMMETRIC_SIGNING_PRECONDITION} when the endpoint is
+ * unreachable, returns a non-OK status, or its keyset is empty. Never logs
+ * the keys themselves -- only each key's algorithm/key-type metadata.
+ * Intended as a one-shot startup check, not a readiness gate: a failure
+ * here does not prevent the server from starting, since `jwtVerify`
+ * itself will fetch fresh keys (and surface a proper 503) on first use.
+ */
+export async function probeJwksEndpoint(
+  jwksUrl: URL,
+  logger: JwksProbeLogger,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const context = { jwksUrl: jwksUrl.toString() };
+  try {
+    const response = await fetchImpl(jwksUrl);
+    if (!response.ok) {
+      logger.warn(
+        { ...context, status: response.status },
+        `The JWKS endpoint returned HTTP ${response.status} at startup. ${JWKS_ASYMMETRIC_SIGNING_PRECONDITION}`,
+      );
+      return;
+    }
+    const body: unknown = await response.json();
+    const keys =
+      isRecord(body) && Array.isArray(body.keys)
+        ? body.keys.filter(isRecord)
+        : [];
+    if (keys.length === 0) {
+      logger.warn(
+        context,
+        `The JWKS endpoint returned no signing keys at startup. ${JWKS_ASYMMETRIC_SIGNING_PRECONDITION}`,
+      );
+      return;
+    }
+    logger.info(
+      { ...context, keyCount: keys.length, algorithms: keyAlgorithms(keys) },
+      "Fetched the CollectFolio JWKS endpoint at startup",
+    );
+  } catch (error) {
+    logger.warn(
+      {
+        ...context,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      `Could not reach the JWKS endpoint at startup. ${JWKS_ASYMMETRIC_SIGNING_PRECONDITION}`,
+    );
+  }
+}
+
+function keyAlgorithms(keys: Record<string, unknown>[]): string[] {
+  return [
+    ...new Set(
+      keys.map((key) => {
+        if (typeof key.alg === "string" && key.alg) return key.alg;
+        if (key.kty === "EC" && typeof key.crv === "string") {
+          return `EC(${key.crv})`;
+        }
+        return typeof key.kty === "string" && key.kty ? key.kty : "unknown";
+      }),
+    ),
+  ];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export class StaticTokenVerifier implements TokenVerifier {
   constructor(private readonly tokens: ReadonlyMap<string, AuthPrincipal>) {}
 

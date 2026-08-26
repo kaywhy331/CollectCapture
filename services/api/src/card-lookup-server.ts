@@ -14,6 +14,7 @@ const sharedRuntimeOptions = {
       }
     : {}),
   collectFolioCatalogUrl: config.COLLECTFOLIO_CATALOG_URL,
+  probeJwksAtStartup: true,
 };
 const runtime =
   config.CARD_RECOGNITION_PROVIDER === "ollama"

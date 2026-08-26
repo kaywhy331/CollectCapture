@@ -34,6 +34,8 @@ CARD_LOOKUP_MAX_CONCURRENCY=2               # concurrent vision-recognition call
 
 No `DATABASE_URL`, CollectCapture Supabase credential, service-role key, storage bucket, device key, public LocalClear URL, or telemetry collector is required. Startup fails if a shared value or the selected provider's secret is missing, an internet-facing integration URL is not HTTPS, or the browser URL is not an exact origin. Blank keys for providers that are not selected are accepted.
 
+**Precondition: CollectFolio's Supabase project must use asymmetric JWT signing keys (ES256/RS256).** This service verifies bearer tokens against `COLLECTFOLIO_SUPABASE_JWKS_URL`/`COLLECTFOLIO_SUPABASE_URL`'s discovery endpoint; a legacy HS256 (symmetric-secret) Supabase project has no JWKS keys to discover and will fail all verification. At startup the service fetches that endpoint once, non-fatally, and logs the discovered key count and algorithms at `info`, or a warning naming this precondition if the endpoint is unreachable or returns no keys -- it never logs the keys themselves, and a failed probe does not stop the server from starting (the first real request still gets a proper `503 authentication_unavailable` if the endpoint is genuinely down).
+
 ## Run from the workspace
 
 For the easiest local launch, copy the dedicated template, fill in its empty and local-service values, and run one command. Loopback HTTP URLs are accepted:

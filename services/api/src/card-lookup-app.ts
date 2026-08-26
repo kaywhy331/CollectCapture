@@ -8,7 +8,11 @@ import Fastify, {
   type FastifyServerOptions,
 } from "fastify";
 import { ZodError } from "zod";
-import { JwksTokenVerifier, type TokenVerifier } from "./auth.js";
+import {
+  JwksTokenVerifier,
+  probeJwksEndpoint,
+  type TokenVerifier,
+} from "./auth.js";
 import { cardLookupHttpPlugin } from "./card-lookup-http.js";
 import type { TrustedProxyMode } from "./card-lookup-config.js";
 import { createRefundableRateLimitStore } from "./card-lookup-rate-limit-store.js";
@@ -29,6 +33,14 @@ interface CardLookupRuntimeBaseOptions {
   collectFolioSupabaseUrl: string;
   collectFolioSupabaseJwksUrl?: string;
   collectFolioCatalogUrl: string;
+  /**
+   * Fires a non-fatal JWKS reachability probe at startup (G9), logging key
+   * count/algorithms or a warning naming the asymmetric-signing-keys
+   * precondition. Off by default so this function's other callers (the
+   * main LocalClear app, tests) don't gain a side-effecting network call;
+   * the standalone entrypoint opts in.
+   */
+  probeJwksAtStartup?: boolean;
 }
 
 export type CardLookupRuntimeOptions = CardLookupRuntimeBaseOptions &
@@ -96,12 +108,18 @@ export function createCardLookupRuntime(
   const issuer = new URL("/auth/v1", options.collectFolioSupabaseUrl)
     .toString()
     .replace(/\/$/, "");
+  const jwksUrl = new URL(
+    options.collectFolioSupabaseJwksUrl ?? `${issuer}/.well-known/jwks.json`,
+  );
+  if (options.probeJwksAtStartup) {
+    // Fire-and-forget: a startup probe is informational (G9), never a
+    // readiness gate -- `jwtVerify` itself fetches fresh keys (and surfaces
+    // a proper 503) on first real use regardless of what this finds.
+    void probeJwksEndpoint(jwksUrl, console);
+  }
   return {
     tokenVerifier: new JwksTokenVerifier({
-      jwksUrl: new URL(
-        options.collectFolioSupabaseJwksUrl ??
-          `${issuer}/.well-known/jwks.json`,
-      ),
+      jwksUrl,
       issuer,
       audience: "authenticated",
     }),
