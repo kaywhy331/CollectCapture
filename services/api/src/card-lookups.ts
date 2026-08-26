@@ -61,7 +61,8 @@ Hard rules:
 - Use null when a field is not visibly supported.
 - Queries must be derived only from visible text and may combine name, set, and collector number.
 - Treat logos, copyright boilerplate, rules text, and random OCR fragments as weak evidence.
-- Confidence measures the visible recognition evidence, not card value, condition, authenticity, or catalog-match certainty.`;
+- Confidence measures the visible recognition evidence, not card value, condition, authenticity, or catalog-match certainty.
+- If the visible card text is not Latin script, include at least one romanized or English query alongside the native-script queries -- the catalog it searches is indexed in Latin script.`;
 
 export interface CardRecognitionProvider {
   readonly providerName: string;
@@ -513,7 +514,9 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
       !Number.isSafeInteger(this.#maxCompletionTokens) ||
       this.#maxCompletionTokens < 1
     ) {
-      throw new Error("The Groq max completion tokens must be a positive integer");
+      throw new Error(
+        "The Groq max completion tokens must be a positive integer",
+      );
     }
   }
 
@@ -583,9 +586,7 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
       }
       let recognition: z.infer<typeof VisionRecognitionSchema>;
       try {
-        const envelope = GroqChatResponseSchema.parse(
-          JSON.parse(responseText),
-        );
+        const envelope = GroqChatResponseSchema.parse(JSON.parse(responseText));
         recognition = VisionRecognitionSchema.parse(
           salvageRecognitionPayload(
             JSON.parse(envelope.choices[0]!.message.content),
@@ -674,7 +675,10 @@ export class TcgcsvCardCatalogProvider implements CardCatalogProvider {
     const candidates = new Map<string, CardLookupCandidate>();
     let successfulRequests = 0;
     let failedRequests = 0;
-    const categoryIds = catalogCategoryIds(input.category);
+    const categoryIds = catalogCategoryIds(
+      input.category,
+      input.recognition.language,
+    );
     const signal = combinedSignal(input.signal, CATALOG_TOTAL_TIMEOUT_MS);
 
     for (const query of uniqueQueries(input.recognition.queries)) {
@@ -943,11 +947,30 @@ function manualRecognition(
   });
 }
 
-function catalogCategoryIds(category: CardLookupCategory): (number | null)[] {
-  if (category === "pokemon") return [3, 85];
+function catalogCategoryIds(
+  category: CardLookupCategory,
+  language: string,
+): (number | null)[] {
+  if (category === "pokemon") {
+    // Pokemon Japan (85) searched before the main Pokemon category (3) for
+    // a recognized Japanese card -- otherwise the loop's early
+    // `candidates.size >= limit` break can fill up on English-catalog
+    // near-misses before the Japanese-catalog printing is ever queried.
+    return isJapaneseLanguage(language) ? [85, 3] : [3, 85];
+  }
   if (category === "magic") return [1];
   if (category === "yugioh") return [2];
   return [null];
+}
+
+function isJapaneseLanguage(language: string): boolean {
+  const value = language.trim().toLowerCase();
+  return (
+    value === "ja" ||
+    value === "jpn" ||
+    value.startsWith("ja-") ||
+    value.startsWith("japan")
+  );
 }
 
 function uniqueQueries(queries: readonly string[]): string[] {
@@ -1093,11 +1116,19 @@ function scoreCandidate(
   return Math.max(0.28, Math.min(0.99, Number(score.toFixed(4))));
 }
 
-function normalized(value: string): string {
+/**
+ * Unicode-aware token normalization for scoring/comparison (G8b): NFKC
+ * folds compatibility variants (full-width digits/letters, for example)
+ * into their standard form, then only Unicode letters (`\p{L}`, which
+ * includes CJK/Kana as well as Latin) and numbers (`\p{N}`) survive.
+ * Exported so `card-recognition-qualification.ts` can share this instead
+ * of keeping its own copy (G3).
+ */
+export function normalized(value: string): string {
   return value
-    .normalize("NFKD")
+    .normalize("NFKC")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }
 

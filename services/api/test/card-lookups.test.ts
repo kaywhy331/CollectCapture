@@ -20,6 +20,7 @@ import {
   OpenAICardRecognitionProvider,
   StatelessCardLookupService,
   TcgcsvCardCatalogProvider,
+  normalized,
   normalizedNumber,
   type CardCatalogProvider,
   type CardLookupHandler,
@@ -202,6 +203,32 @@ describe("OpenAI card recognition", () => {
       statusCode: 502,
       code: "card_recognition_unavailable",
     });
+  });
+
+  it("instructs the model to include a romanized/English query for non-Latin text (G8a)", async () => {
+    let systemPrompt = "";
+    const parse = vi.fn(async (request: { input: { content: unknown }[] }) => {
+      systemPrompt = String(request.input[0]?.content ?? "");
+      return {
+        output_parsed: {
+          category: "pokemon",
+          name: "Charizard ex",
+          setName: "Obsidian Flames",
+          collectorNumber: "223/197",
+          language: "en",
+          visibleText: ["Charizard ex"],
+          queries: ["Charizard ex 223/197"],
+          confidence: 0.91,
+        },
+      };
+    });
+    const provider = new OpenAICardRecognitionProvider({
+      model: "deterministic-v1",
+      client: { responses: { parse } } as unknown as OpenAI,
+    });
+
+    await provider.recognize({ imageDataUrl, categoryHint: "all" });
+    expect(systemPrompt).toContain("romanized or English query");
   });
 });
 
@@ -453,6 +480,37 @@ describe("Ollama card recognition", () => {
           model: "qwen3.5:4b",
         }),
     ).toThrow("must use HTTPS outside the local machine");
+  });
+
+  it("instructs the model to include a romanized/English query for non-Latin text (G8a)", async () => {
+    let systemPrompt = "";
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      fetchImpl: async (_input, init) => {
+        const body = JSON.parse(String(init?.body));
+        systemPrompt = body.messages[0].content;
+        return new Response(
+          JSON.stringify({
+            message: {
+              content: JSON.stringify({
+                category: "pokemon",
+                name: "Charizard ex",
+                setName: "Obsidian Flames",
+                collectorNumber: "223/197",
+                language: "en",
+                visibleText: ["Charizard ex"],
+                queries: ["Charizard ex 223/197"],
+                confidence: 0.91,
+              }),
+            },
+          }),
+        );
+      },
+    });
+
+    await provider.recognize({ imageDataUrl, categoryHint: "all" });
+    expect(systemPrompt).toContain("romanized or English query");
   });
 });
 
@@ -760,6 +818,42 @@ describe("Groq card recognition", () => {
       code: "card_recognition_misconfigured",
     });
   });
+
+  it("instructs the model to include a romanized/English query for non-Latin text (G8a)", async () => {
+    let promptText = "";
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "qwen/qwen3.6-27b",
+      fetchImpl: async (_input, init) => {
+        const body = JSON.parse(String(init?.body));
+        promptText = body.messages[0].content[0].text;
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    category: "pokemon",
+                    name: "Charizard ex",
+                    setName: "Obsidian Flames",
+                    collectorNumber: "223/197",
+                    language: "en",
+                    visibleText: ["Charizard ex"],
+                    queries: ["Charizard ex 223/197"],
+                    confidence: 0.91,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    await provider.recognize({ imageDataUrl, categoryHint: "pokemon" });
+    expect(promptText).toContain("romanized or English query");
+  });
 });
 
 describe("normalizedNumber", () => {
@@ -771,6 +865,18 @@ describe("normalizedNumber", () => {
 
   it("does not treat a value ending in zero as equal to that value without it", () => {
     expect(normalizedNumber("10")).not.toBe(normalizedNumber("1"));
+  });
+});
+
+describe("normalized (G8b)", () => {
+  it("keeps CJK tokens instead of flattening them to nothing", () => {
+    expect(normalized("リザードン")).toBe("リザードン");
+    expect(normalized("リザードン")).not.toBe("");
+    expect(normalized("リザードン ex")).not.toBe(normalized("ex"));
+  });
+
+  it("still folds Latin case and punctuation the way scoring depends on", () => {
+    expect(normalized("Charizard-ex!")).toBe(normalized("charizard ex"));
   });
 });
 
@@ -1219,6 +1325,124 @@ describe("TCGCSV catalog lookup", () => {
         warning.startsWith("catalog_candidate_skipped"),
       ),
     ).toBe(true);
+  });
+
+  it("scores Japanese-name candidates without flattening them to the 0.35 default (G8b)", async () => {
+    const japaneseRecognition = CardRecognitionSchema.parse({
+      ...recognition,
+      name: "リザードン",
+      setName: null,
+      collectorNumber: null,
+      language: "ja",
+      queries: ["リザードン"],
+    });
+    const provider = new TcgcsvCardCatalogProvider({
+      baseUrl: "https://catalog.example.test",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            products: [
+              {
+                categoryId: 85,
+                categoryName: "Pokemon Japan",
+                groupId: 1,
+                groupName: "Japanese Base Set",
+                productId: 901,
+                name: "リザードン",
+              },
+              {
+                categoryId: 85,
+                categoryName: "Pokemon Japan",
+                groupId: 1,
+                groupName: "Japanese Base Set",
+                productId: 902,
+                name: "フシギダネ",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+
+    const result = await provider.search({
+      recognition: japaneseRecognition,
+      category: "pokemon",
+      limit: 12,
+      authorization: "Bearer folio-token",
+    });
+
+    expect(result.candidates).toHaveLength(2);
+    const scores = new Set(
+      result.candidates.map((candidateItem) => candidateItem.matchScore),
+    );
+    // The exact match ("リザードン") and the unrelated name ("フシギダネ")
+    // must not collapse to the same default score.
+    expect(scores.size).toBeGreaterThan(1);
+    expect(
+      result.candidates.find(
+        (candidateItem) => candidateItem.externalId === "85:1:901",
+      )?.matchScore,
+    ).toBeGreaterThan(
+      result.candidates.find(
+        (candidateItem) => candidateItem.externalId === "85:1:902",
+      )!.matchScore,
+    );
+  });
+
+  it("queries Pokemon Japan (85) before Pokemon (3) for a recognized Japanese card (G8c)", async () => {
+    const categoryIdsInRequestOrder: (string | null)[] = [];
+    const japaneseRecognition = CardRecognitionSchema.parse({
+      ...recognition,
+      language: "ja",
+      queries: ["Charizard"],
+    });
+    const provider = new TcgcsvCardCatalogProvider({
+      baseUrl: "https://catalog.example.test",
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        categoryIdsInRequestOrder.push(url.searchParams.get("category_id"));
+        return new Response(JSON.stringify({ products: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    await provider.search({
+      recognition: japaneseRecognition,
+      category: "pokemon",
+      limit: 12,
+      authorization: "Bearer folio-token",
+    });
+
+    expect(categoryIdsInRequestOrder).toEqual(["85", "3"]);
+  });
+
+  it("keeps Pokemon (3) before Pokemon Japan (85) for a non-Japanese card (G8c)", async () => {
+    const categoryIdsInRequestOrder: (string | null)[] = [];
+    const provider = new TcgcsvCardCatalogProvider({
+      baseUrl: "https://catalog.example.test",
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        categoryIdsInRequestOrder.push(url.searchParams.get("category_id"));
+        return new Response(JSON.stringify({ products: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    await provider.search({
+      recognition: CardRecognitionSchema.parse({
+        ...recognition,
+        queries: ["Charizard"],
+      }),
+      category: "pokemon",
+      limit: 12,
+      authorization: "Bearer folio-token",
+    });
+
+    expect(categoryIdsInRequestOrder).toEqual(["3", "85"]);
   });
 });
 
