@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
 import { buildApp } from "../src/app.js";
 import {
+  ClientDisconnectedError,
   GroqCardRecognitionProvider,
   OllamaCardRecognitionProvider,
   OpenAICardRecognitionProvider,
@@ -91,6 +92,7 @@ describe("OpenAI card recognition", () => {
     ).resolves.toMatchObject({ source: "vision", name: "Charizard ex" });
     expect(parse).toHaveBeenCalledWith(
       expect.objectContaining({ store: false, model: "deterministic-v1" }),
+      expect.objectContaining({ signal: undefined }),
     );
   });
 });
@@ -495,6 +497,87 @@ describe("stateless card lookup", () => {
       ),
     ).rejects.toMatchObject({ statusCode: 422, code: "media_type_mismatch" });
   });
+});
+
+describe("client disconnect cancellation", () => {
+  it("aborts an in-flight provider call and never enters the catalog phase (mid-flight abort)", async () => {
+    const controller = new AbortController();
+    let providerObservedAbort = false;
+    const recognize = vi.fn(
+      (input: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          input.signal?.addEventListener("abort", () => {
+            providerObservedAbort = true;
+            reject(new Error("provider fetch aborted"));
+          });
+        }),
+    );
+    const search = vi.fn(async () => ({ candidates: [], warnings: [] }));
+    const service = new StatelessCardLookupService(
+      { providerName: "test-vision", model: "deterministic-v1", recognize },
+      { search },
+    );
+
+    const lookup = service.lookup(
+      { imageDataUrl, query: "", category: "all", limit: 12 },
+      { authorization: "Bearer folio-token", signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(), 20);
+
+    await expect(lookup).rejects.toBeInstanceOf(ClientDisconnectedError);
+    expect(providerObservedAbort).toBe(true);
+    expect(search).not.toHaveBeenCalled();
+  }, 5_000);
+
+  it("never enters the catalog phase when the signal is already aborted before the lookup begins", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const recognize = vi.fn(async () => recognition);
+    const search = vi.fn(async () => ({ candidates: [], warnings: [] }));
+    const service = new StatelessCardLookupService(
+      { providerName: "test-vision", model: "deterministic-v1", recognize },
+      { search },
+    );
+
+    await expect(
+      service.lookup(
+        { imageDataUrl, query: "", category: "all", limit: 12 },
+        { authorization: "Bearer folio-token", signal: controller.signal },
+      ),
+    ).rejects.toBeInstanceOf(ClientDisconnectedError);
+    expect(recognize).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("threads the signal into the real Ollama fetch call", async () => {
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      fetchImpl: (_input, init) => {
+        observedSignal = init?.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          observedSignal?.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        });
+      },
+    });
+
+    const recognizePromise = provider.recognize({
+      imageDataUrl,
+      categoryHint: "all",
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(recognizePromise).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_failed",
+    });
+    expect(observedSignal?.aborted).toBe(true);
+  }, 5_000);
 });
 
 describe("TCGCSV catalog lookup", () => {

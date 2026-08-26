@@ -1,6 +1,10 @@
 import { CardLookupResultSchema } from "@localclear/domain";
+import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildCardLookupApp } from "../src/card-lookup-app.js";
+import {
+  buildCardLookupApp,
+  createCardLookupRuntime,
+} from "../src/card-lookup-app.js";
 import { readCardLookupConfig } from "../src/card-lookup-config.js";
 import { StaticTokenVerifier } from "../src/auth.js";
 
@@ -195,7 +199,10 @@ describe("standalone card lookup service", () => {
     await expect(response.json()).resolves.toEqual({ lookup });
     expect(performLookup).toHaveBeenCalledWith(
       expect.objectContaining({ query: "Charizard 4/102" }),
-      { authorization: "Bearer folio-token" },
+      expect.objectContaining({
+        authorization: "Bearer folio-token",
+        signal: expect.any(AbortSignal),
+      }),
     );
 
     const preflight = await fetch(`${address}/v1/card-lookups`, {
@@ -491,5 +498,105 @@ describe("vision concurrency gate", () => {
     expect(Number(secondCall.headers["x-ratelimit-remaining"])).toBe(
       firstRemaining - 1,
     );
+  });
+});
+
+describe("client disconnect cancellation (route wiring)", () => {
+  const apps: Awaited<ReturnType<typeof buildCardLookupApp>>[] = [];
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  it("aborts the provider call when the client socket is destroyed mid-request", async () => {
+    // app.inject() has no real socket to destroy, so this test needs an
+    // actual listening server and a real HTTP client request.
+    const lookupStarted = createDeferred<void>();
+    const providerAbortSeen = createDeferred<void>();
+    const service = {
+      lookup(
+        _request: unknown,
+        context: { authorization: string; signal?: AbortSignal },
+      ): Promise<never> {
+        return new Promise<never>((_resolve, reject) => {
+          context.signal?.addEventListener("abort", () => {
+            providerAbortSeen.resolve();
+            reject(new Error("provider fetch aborted"));
+          });
+          lookupStarted.resolve();
+        });
+      },
+    };
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      tokenVerifier: new StaticTokenVerifier(
+        new Map([
+          ["folio-token", { userId: "folio-user", email: null, roles: [] }],
+        ]),
+      ),
+      service,
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const clientRequest = httpRequest(`${address}/v1/card-lookups`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer folio-token",
+        "content-type": "application/json",
+      },
+    });
+    // Destroying the socket below makes the client side error too; this
+    // test only asserts on what the server observed.
+    clientRequest.on("error", () => {});
+    clientRequest.end(
+      JSON.stringify({ imageDataUrl, query: "", category: "all" }),
+    );
+
+    await lookupStarted.promise;
+    clientRequest.destroy();
+
+    await providerAbortSeen.promise;
+  }, 10_000);
+});
+
+describe("deadline budget startup warning", () => {
+  const sharedRuntimeOptions = {
+    collectFolioSupabaseUrl: "https://folio-project.example.test",
+    collectFolioCatalogUrl: "https://catalog.example.test",
+  };
+
+  it("warns when the provider timeout plus catalog budget exceeds the Cloudflare edge deadline", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      createCardLookupRuntime({
+        ...sharedRuntimeOptions,
+        recognitionProvider: "ollama",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.5:4b",
+        ollamaTimeoutMs: 600_000,
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toMatch(/exceeds Cloudflare/);
+      expect(warn.mock.calls[0]?.[0]).toMatch(/30000 ms/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not warn for a compliant provider timeout", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      createCardLookupRuntime({
+        ...sharedRuntimeOptions,
+        recognitionProvider: "ollama",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.5:4b",
+        ollamaTimeoutMs: 50_000,
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -24,8 +24,10 @@ import {
 const MAX_CARD_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_CATALOG_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_RECOGNITION_RESPONSE_BYTES = 512 * 1024;
-const RECOGNITION_TIMEOUT_MS = 15_000;
-const CATALOG_TOTAL_TIMEOUT_MS = 14_000;
+/** Exported so runtime startup can warn when a configured provider timeout
+ * plus this catalog budget would exceed the Cloudflare edge deadline. */
+export const RECOGNITION_TIMEOUT_MS = 15_000;
+export const CATALOG_TOTAL_TIMEOUT_MS = 14_000;
 
 const VisionRecognitionSchema = z
   .object({
@@ -58,6 +60,7 @@ export interface CardRecognitionProvider {
   recognize(input: {
     imageDataUrl: string;
     categoryHint: CardLookupCategory;
+    signal?: AbortSignal | undefined;
   }): Promise<CardRecognition>;
 }
 
@@ -80,6 +83,7 @@ export class OpenAICardRecognitionProvider implements CardRecognitionProvider {
   async recognize(input: {
     imageDataUrl: string;
     categoryHint: CardLookupCategory;
+    signal?: AbortSignal | undefined;
   }): Promise<CardRecognition> {
     const content: ResponseInputContent[] = [
       {
@@ -96,20 +100,25 @@ export class OpenAICardRecognitionProvider implements CardRecognitionProvider {
       },
     ];
     try {
-      const response = await this.#client.responses.parse({
-        model: this.model,
-        store: false,
-        input: [
-          { role: "system", content: CARD_RECOGNITION_PROMPT },
-          { role: "user", content },
-        ],
-        text: {
-          format: zodTextFormat(
-            VisionRecognitionSchema,
-            "collectcapture_card_recognition",
-          ),
+      const response = await this.#client.responses.parse(
+        {
+          model: this.model,
+          store: false,
+          input: [
+            { role: "system", content: CARD_RECOGNITION_PROMPT },
+            { role: "user", content },
+          ],
+          text: {
+            format: zodTextFormat(
+              VisionRecognitionSchema,
+              "collectcapture_card_recognition",
+            ),
+          },
         },
-      });
+        // The client's own `timeout: RECOGNITION_TIMEOUT_MS` already bounds
+        // this call; the SDK combines that with a passed-in signal itself.
+        { signal: input.signal },
+      );
       if (!response.output_parsed) {
         throw new Error(
           "The recognition provider returned no structured output",
@@ -169,6 +178,7 @@ export class OllamaCardRecognitionProvider implements CardRecognitionProvider {
   async recognize(input: {
     imageDataUrl: string;
     categoryHint: CardLookupCategory;
+    signal?: AbortSignal | undefined;
   }): Promise<CardRecognition> {
     try {
       const encodedImage = encodedCardImage(input.imageDataUrl);
@@ -194,7 +204,7 @@ export class OllamaCardRecognitionProvider implements CardRecognitionProvider {
             },
           ],
         }),
-        signal: AbortSignal.timeout(this.#timeoutMs),
+        signal: combinedSignal(input.signal, this.#timeoutMs),
       });
       const responseText = await readBoundedText(
         response,
@@ -273,6 +283,7 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
   async recognize(input: {
     imageDataUrl: string;
     categoryHint: CardLookupCategory;
+    signal?: AbortSignal | undefined;
   }): Promise<CardRecognition> {
     try {
       const response = await this.#fetch(
@@ -309,7 +320,7 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
               },
             ],
           }),
-          signal: AbortSignal.timeout(this.#timeoutMs),
+          signal: combinedSignal(input.signal, this.#timeoutMs),
         },
       );
       const responseText = await readBoundedText(
@@ -354,6 +365,7 @@ export interface CardCatalogProvider {
     category: CardLookupCategory;
     limit: number;
     authorization: string;
+    signal?: AbortSignal | undefined;
   }): Promise<CardCatalogSearchResult>;
 }
 
@@ -395,13 +407,14 @@ export class TcgcsvCardCatalogProvider implements CardCatalogProvider {
     category: CardLookupCategory;
     limit: number;
     authorization: string;
+    signal?: AbortSignal | undefined;
   }): Promise<CardCatalogSearchResult> {
     const warnings = new Set<string>();
     const candidates = new Map<string, CardLookupCandidate>();
     let successfulRequests = 0;
     let failedRequests = 0;
     const categoryIds = catalogCategoryIds(input.category);
-    const signal = AbortSignal.timeout(CATALOG_TOTAL_TIMEOUT_MS);
+    const signal = combinedSignal(input.signal, CATALOG_TOTAL_TIMEOUT_MS);
 
     for (const query of uniqueQueries(input.recognition.queries)) {
       if (signal.aborted) break;
@@ -499,10 +512,24 @@ export class TcgcsvCardCatalogProvider implements CardCatalogProvider {
   }
 }
 
+/**
+ * Thrown by {@link StatelessCardLookupService.lookup} when the request's
+ * `signal` was already aborted by the time a phase's provider call failed.
+ * This is a distinct outcome from a provider failure: the caller (the HTTP
+ * route) should log it as `client_disconnected`, never as a recognition or
+ * catalog error, and must not attempt to write a response body.
+ */
+export class ClientDisconnectedError extends Error {
+  constructor() {
+    super("The client disconnected before the card lookup finished");
+    this.name = "ClientDisconnectedError";
+  }
+}
+
 export interface CardLookupHandler {
   lookup(
     request: CardLookupRequest,
-    context: { authorization: string },
+    context: { authorization: string; signal?: AbortSignal | undefined },
   ): Promise<CardLookupResult>;
 }
 
@@ -514,23 +541,43 @@ export class StatelessCardLookupService implements CardLookupHandler {
 
   async lookup(
     request: CardLookupRequest,
-    context: { authorization: string },
+    context: { authorization: string; signal?: AbortSignal | undefined },
   ): Promise<CardLookupResult> {
+    if (context.signal?.aborted) throw new ClientDisconnectedError();
     const image = verifiedCardImage(request.imageDataUrl);
-    const recognition = request.query
-      ? manualRecognition(request.query, request.category)
-      : await this.recognitionProvider.recognize({
+    let recognition: CardRecognition;
+    if (request.query) {
+      recognition = manualRecognition(request.query, request.category);
+    } else {
+      try {
+        recognition = await this.recognitionProvider.recognize({
           imageDataUrl: request.imageDataUrl,
           categoryHint: request.category,
+          signal: context.signal,
         });
+      } catch (error) {
+        throw disconnectedOr(error, context.signal);
+      }
+    }
+    // Re-checked explicitly (rather than relying on each catalog provider
+    // to notice on its own) so a signal that aborted between phases -- or
+    // one a manual-query lookup never gave a provider fetch to observe --
+    // still stops the catalog phase from starting at all.
+    if (context.signal?.aborted) throw new ClientDisconnectedError();
     const category =
       request.category === "all" ? recognition.category : request.category;
-    const catalog = await this.catalogProvider.search({
-      recognition,
-      category,
-      limit: request.limit,
-      authorization: context.authorization,
-    });
+    let catalog: CardCatalogSearchResult;
+    try {
+      catalog = await this.catalogProvider.search({
+        recognition,
+        category,
+        limit: request.limit,
+        authorization: context.authorization,
+        signal: context.signal,
+      });
+    } catch (error) {
+      throw disconnectedOr(error, context.signal);
+    }
     return CardLookupResultSchema.parse({
       contentSha256: image.contentSha256,
       imageRetained: false,
@@ -549,10 +596,21 @@ export class StatelessCardLookupService implements CardLookupHandler {
    */
   async lookupUnvalidated(
     rawRequest: unknown,
-    context: { authorization: string },
+    context: { authorization: string; signal?: AbortSignal | undefined },
   ): Promise<CardLookupResult> {
     return this.lookup(CardLookupRequestSchema.parse(rawRequest), context);
   }
+}
+
+/**
+ * Reclassifies any phase failure as a {@link ClientDisconnectedError} when
+ * the caller's signal is already aborted -- the client is gone, so the
+ * original provider/catalog error (which may itself just be an AbortError)
+ * is no longer meaningful and must not be logged or reported as a provider
+ * failure.
+ */
+function disconnectedOr(error: unknown, signal: AbortSignal | undefined) {
+  return signal?.aborted ? new ClientDisconnectedError() : error;
 }
 
 function verifiedCardImage(dataUrl: string) {
@@ -823,6 +881,21 @@ async function readBoundedText(
   } finally {
     reader.releaseLock();
   }
+}
+
+/**
+ * Combines a caller-supplied signal (typically tied to client disconnect)
+ * with this call's own per-phase timeout, so either aborts the request.
+ * `fetch` only accepts one `signal`, unlike the OpenAI SDK which merges a
+ * passed-in signal with its own configured timeout itself.
+ */
+function combinedSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): AbortSignal {
+  return signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+    : AbortSignal.timeout(timeoutMs);
 }
 
 function validatedOllamaBaseUrl(value: string | URL): URL {

@@ -71,8 +71,22 @@ For Docker Desktop on RED PC, including one-command Groq, Ollama Cloud, CPU Olla
 
 - Terminate TLS at the platform or reverse proxy and expose only HTTPS publicly.
 - Preserve `Authorization`, `Origin`, `Content-Type`, and `X-Request-Id` request headers. Do not log authorization values or request bodies at the edge.
-- Allow request bodies of at least 3,000,000 bytes. Align upstream and client deadlines with the selected recognition timeout plus the 14-second catalog deadline; the current CollectFolio browser deadline remains 30 seconds.
+- Allow request bodies of at least 3,000,000 bytes.
 - Route health checks to `GET /health`. A healthy response is `{"status":"ok","service":"collectcapture-card-lookups"}`.
+
+### Deadline budget
+
+Four independent deadlines apply to one lookup, from the browser inward. Each layer's timeout must comfortably exceed the one after it, or a slow lookup fails upstream before the server would have finished it anyway:
+
+| Layer                  | Deadline                                                                                                 | Configurable               |
+| ---------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------- |
+| CollectFolio browser   | 30 s                                                                                                     | No (fixed in CollectFolio) |
+| Cloudflare Tunnel edge | ~100 s                                                                                                   | No (Cloudflare-imposed)    |
+| Recognition provider   | OpenAI 15 s (fixed) · Groq 60 s default (`GROQ_TIMEOUT_MS`) · Ollama 120 s default (`OLLAMA_TIMEOUT_MS`) | Groq/Ollama only           |
+| Catalog search         | 14 s (fixed)                                                                                             | No                         |
+
+At startup the service logs a warning if the selected provider's timeout plus the 14-second catalog budget would exceed the ~100-second Cloudflare edge deadline (this is on by default for Ollama's own default timeout). If a request's client disconnects before a response is sent -- the 30-second browser deadline is the most common reason -- the server cancels the in-flight provider and catalog calls immediately rather than continuing to spend budget on a lookup nobody is waiting for.
+
 - Keep one service replica for the initial deployment. The authenticated 30-lookups/hour counter uses Fastify's in-memory store and is therefore enforced per process. Multiple replicas require a reviewed shared rate-limit store before they can preserve the contract.
 - Do not enable sticky caches or response caching for `POST /v1/card-lookups`; the application returns `Cache-Control: no-store` and `Pragma: no-cache`.
 

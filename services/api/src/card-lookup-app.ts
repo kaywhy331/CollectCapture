@@ -12,9 +12,11 @@ import { JwksTokenVerifier, type TokenVerifier } from "./auth.js";
 import { cardLookupHttpPlugin } from "./card-lookup-http.js";
 import type { TrustedProxyMode } from "./card-lookup-config.js";
 import {
+  CATALOG_TOTAL_TIMEOUT_MS,
   GroqCardRecognitionProvider,
   OllamaCardRecognitionProvider,
   OpenAICardRecognitionProvider,
+  RECOGNITION_TIMEOUT_MS,
   StatelessCardLookupService,
   TcgcsvCardCatalogProvider,
   type CardLookupHandler,
@@ -56,9 +58,38 @@ export interface CardLookupRuntime {
   service: CardLookupHandler;
 }
 
+/** Cloudflare's documented tunnel/edge request deadline, roughly. */
+const CLOUDFLARE_EDGE_DEADLINE_MS = 100_000;
+/** CollectFolio's documented browser-side abort deadline. */
+const BROWSER_DEADLINE_MS = 30_000;
+
+/**
+ * Warns at startup when the selected provider's recognition timeout plus
+ * the fixed catalog budget would exceed Cloudflare's edge deadline -- a
+ * lookup that legitimately runs that long is going to fail at the edge (or
+ * in the browser, whose own deadline is shorter still) no matter what the
+ * server does.
+ */
+function warnIfDeadlineBudgetExceedsEdge(
+  options: CardLookupRuntimeOptions,
+): void {
+  const [providerName, providerTimeoutMs] =
+    options.recognitionProvider === "ollama"
+      ? (["Ollama", options.ollamaTimeoutMs] as const)
+      : options.recognitionProvider === "groq"
+        ? (["Groq", options.groqTimeoutMs] as const)
+        : (["OpenAI", RECOGNITION_TIMEOUT_MS] as const);
+  const totalBudgetMs = providerTimeoutMs + CATALOG_TOTAL_TIMEOUT_MS;
+  if (totalBudgetMs <= CLOUDFLARE_EDGE_DEADLINE_MS) return;
+  console.warn(
+    `[card-lookups] ${providerName} recognition timeout (${providerTimeoutMs} ms) plus the ${CATALOG_TOTAL_TIMEOUT_MS} ms catalog budget is ${totalBudgetMs} ms, which exceeds Cloudflare's roughly ${CLOUDFLARE_EDGE_DEADLINE_MS} ms edge deadline. The documented CollectFolio browser deadline is only ${BROWSER_DEADLINE_MS} ms, shorter still. A lookup that actually runs this long will already fail at the edge or in the browser before the server finishes -- lower the provider timeout, or accept that slow lookups will time out upstream.`,
+  );
+}
+
 export function createCardLookupRuntime(
   options: CardLookupRuntimeOptions,
 ): CardLookupRuntime {
+  warnIfDeadlineBudgetExceedsEdge(options);
   const issuer = new URL("/auth/v1", options.collectFolioSupabaseUrl)
     .toString()
     .replace(/\/$/, "");

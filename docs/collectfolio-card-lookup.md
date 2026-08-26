@@ -68,6 +68,18 @@ Candidates contain identity metadata and an exact TCGCSV `(categoryId, groupId, 
 - OpenAI Responses storage is disabled with `store: false`. Local Ollama inference remains on the configured host. Ollama Cloud and Groq process the crop under their account and provider data controls; provider selection therefore changes the external privacy boundary.
 - OpenAI recognition is bounded to 15 seconds; standalone Groq defaults to 60 seconds and Ollama to 120 seconds. Direct Ollama/Groq HTTP responses are capped at 512 KiB. All catalog attempts share a 14-second deadline, each response is capped at 8 MiB, and the browser independently aborts after 30 seconds.
 - The result's `imageRetained: false` field is a mandatory service assertion, not a claim that an external provider has zero retention.
+- If the browser or an intermediate hop disconnects before a response is sent, the server cancels the in-flight provider and catalog calls immediately rather than continuing to spend time (and, for Ollama Cloud/Groq, provider cost) on a lookup nobody is waiting for.
+
+### Deadline budget
+
+| Layer                                             | Deadline                                               |
+| ------------------------------------------------- | ------------------------------------------------------ |
+| CollectFolio browser                              | 30 s                                                   |
+| Cloudflare Tunnel edge (when deployed behind one) | ~100 s                                                 |
+| Recognition provider                              | OpenAI 15 s · Groq 60 s default · Ollama 120 s default |
+| Catalog search                                    | 14 s                                                   |
+
+Each layer's deadline must comfortably exceed the one after it. The standalone service warns at startup if the selected provider's timeout plus the 14-second catalog budget would exceed the edge deadline; see [the deployment runbook](deploy-card-lookups.md) for the full table and the `GROQ_TIMEOUT_MS`/`OLLAMA_TIMEOUT_MS` knobs.
 
 Any future persistence, asynchronous enrichment, broader image use, or provider outside the reviewed OpenAI/Ollama/Groq adapters requires a new contract version, privacy review, retention disclosure, and CollectFolio UI approval before rollout.
 
