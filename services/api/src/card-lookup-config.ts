@@ -19,6 +19,21 @@ const CardLookupEnvironmentSchema = z
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),
+    // Absent (the default) means exactly today's behavior: no telemetry is
+    // initialized at all (G12b), matching initializeTelemetry's own
+    // "no endpoint -> disabled" contract.
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+    OTEL_SERVICE_NAME: z
+      .string()
+      .trim()
+      .min(1)
+      .default("collectcapture-card-lookups"),
+    OTEL_EXPORT_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(5_000)
+      .max(300_000)
+      .default(60_000),
     CARD_RECOGNITION_PROVIDER: z
       .enum(["openai", "ollama", "groq"])
       .default("openai"),
@@ -42,7 +57,9 @@ const CardLookupEnvironmentSchema = z
       .max(600_000)
       .default(60_000),
     GROQ_REASONING_EFFORT: z.string().trim().default("none"),
-    GROQ_RESPONSE_FORMAT: z.enum(["json_object", "json_schema"]).default("json_object"),
+    GROQ_RESPONSE_FORMAT: z
+      .enum(["json_object", "json_schema"])
+      .default("json_object"),
     GROQ_MAX_COMPLETION_TOKENS: z.coerce
       .number()
       .int()

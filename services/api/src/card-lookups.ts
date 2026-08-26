@@ -794,10 +794,28 @@ export class ClientDisconnectedError extends Error {
   }
 }
 
+/** Reported once per phase that actually ran (G12a) -- a manual-query
+ * lookup never runs a `recognition` phase, so no timing is reported for
+ * it. Fires whether the phase succeeded or failed. */
+export interface CardLookupPhaseTiming {
+  phase: "recognition" | "catalog";
+  durationMs: number;
+}
+
 export interface CardLookupHandler {
+  /** Configuration facts about this handler's recognition provider, for
+   * telemetry (G12a) -- not tied to any one request's outcome. A caller
+   * that is not a {@link StatelessCardLookupService} (a test mock, for
+   * example) simply omits these. */
+  readonly recognitionProviderName?: string;
+  readonly recognitionModel?: string;
   lookup(
     request: CardLookupRequest,
-    context: { authorization: string; signal?: AbortSignal | undefined },
+    context: {
+      authorization: string;
+      signal?: AbortSignal | undefined;
+      onPhaseComplete?: (timing: CardLookupPhaseTiming) => void;
+    },
   ): Promise<CardLookupResult>;
 }
 
@@ -807,9 +825,21 @@ export class StatelessCardLookupService implements CardLookupHandler {
     readonly catalogProvider: CardCatalogProvider,
   ) {}
 
+  get recognitionProviderName(): string {
+    return this.recognitionProvider.providerName;
+  }
+
+  get recognitionModel(): string {
+    return this.recognitionProvider.model;
+  }
+
   async lookup(
     request: CardLookupRequest,
-    context: { authorization: string; signal?: AbortSignal | undefined },
+    context: {
+      authorization: string;
+      signal?: AbortSignal | undefined;
+      onPhaseComplete?: (timing: CardLookupPhaseTiming) => void;
+    },
   ): Promise<CardLookupResult> {
     if (context.signal?.aborted) throw new ClientDisconnectedError();
     const image = verifiedCardImage(request.imageDataUrl);
@@ -817,6 +847,7 @@ export class StatelessCardLookupService implements CardLookupHandler {
     if (request.query) {
       recognition = manualRecognition(request.query, request.category);
     } else {
+      const recognitionStartedAt = performance.now();
       try {
         recognition = await this.recognitionProvider.recognize({
           imageDataUrl: request.imageDataUrl,
@@ -825,6 +856,11 @@ export class StatelessCardLookupService implements CardLookupHandler {
         });
       } catch (error) {
         throw disconnectedOr(error, context.signal);
+      } finally {
+        context.onPhaseComplete?.({
+          phase: "recognition",
+          durationMs: performance.now() - recognitionStartedAt,
+        });
       }
     }
     // Re-checked explicitly (rather than relying on each catalog provider
@@ -835,6 +871,7 @@ export class StatelessCardLookupService implements CardLookupHandler {
     const category =
       request.category === "all" ? recognition.category : request.category;
     let catalog: CardCatalogSearchResult;
+    const catalogStartedAt = performance.now();
     try {
       catalog = await this.catalogProvider.search({
         recognition,
@@ -845,6 +882,11 @@ export class StatelessCardLookupService implements CardLookupHandler {
       });
     } catch (error) {
       throw disconnectedOr(error, context.signal);
+    } finally {
+      context.onPhaseComplete?.({
+        phase: "catalog",
+        durationMs: performance.now() - catalogStartedAt,
+      });
     }
     return CardLookupResultSchema.parse({
       contentSha256: image.contentSha256,

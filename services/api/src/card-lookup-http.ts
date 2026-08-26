@@ -4,8 +4,31 @@ import { createAuthenticationHook, type TokenVerifier } from "./auth.js";
 import {
   ClientDisconnectedError,
   type CardLookupHandler,
+  type CardLookupPhaseTiming,
 } from "./card-lookups.js";
 import { ApplicationError } from "./errors.js";
+import {
+  recordCardLookupBusy,
+  recordCardLookupCatalogDuration,
+  recordCardLookupMediaRejected,
+  recordCardLookupOutcome,
+  recordCardLookupProviderFailure,
+  recordCardLookupRateLimited,
+  recordCardLookupRecognitionDuration,
+} from "./observability.js";
+
+/** `ApplicationError` codes that mean the uploaded image itself was
+ * rejected by media verification, before any recognition/catalog phase
+ * ran (G12). Kept in sync with the codes `media-verification.ts` and
+ * `verifiedCardImage` in `card-lookups.ts` actually throw. */
+const MEDIA_REJECTION_CODES = new Set([
+  "invalid_card_image",
+  "media_type_mismatch",
+  "media_hash_mismatch",
+  "media_metadata_invalid",
+  "media_location_present",
+  "media_too_large",
+]);
 
 export interface CardLookupHttpOptions {
   tokenVerifier: TokenVerifier;
@@ -111,6 +134,9 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
         if (!reply.sent) abortController.abort();
       });
 
+      const provider = options.service.recognitionProviderName ?? "unknown";
+      const model = options.service.recognitionModel ?? "unknown";
+
       // Only a vision-recognition lookup (an empty collector query) needs a
       // slot; a manual-query lookup skips vision and must never be gated.
       const needsVisionSlot = input.query.length === 0;
@@ -119,6 +145,12 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
         : undefined;
       if (needsVisionSlot && !releaseVisionSlot) {
         // Busy: reject before charging the user's hourly quota unit.
+        recordCardLookupBusy();
+        recordCardLookupOutcome("busy", provider);
+        request.log.info(
+          { provider, model, outcome: "busy" },
+          "Card lookup rejected: recognition capacity busy",
+        );
         await reply.code(503).header("retry-after", "5").send({
           error: "card_lookup_busy",
           message:
@@ -128,6 +160,17 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
       }
 
       const quotaKey = cardLookupQuotaKey(request.principal.userId);
+      // Populated by the service's per-phase timing callback (G12a); a
+      // manual-query lookup never sets `recognitionMs` (no recognition
+      // phase runs), and a lookup that fails before the catalog phase
+      // starts never sets `catalogMs`.
+      let recognitionMs: number | undefined;
+      let catalogMs: number | undefined;
+      const onPhaseComplete = (timing: CardLookupPhaseTiming): void => {
+        if (timing.phase === "recognition") recognitionMs = timing.durationMs;
+        else catalogMs = timing.durationMs;
+      };
+
       try {
         // Charge the quota only once a lookup is actually going to run, so
         // a busy rejection above never consumes it.
@@ -142,6 +185,7 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
             .header("x-ratelimit-remaining", limit.remaining)
             .header("x-ratelimit-reset", limit.ttlInSeconds);
           if (limit.isExceeded) {
+            recordCardLookupRateLimited();
             await reply
               .code(429)
               .header("retry-after", limit.ttlInSeconds)
@@ -156,7 +200,31 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
         const lookup = await options.service.lookup(input, {
           authorization: request.headers.authorization!,
           signal: abortController.signal,
+          onPhaseComplete,
         });
+        if (recognitionMs !== undefined) {
+          recordCardLookupRecognitionDuration(
+            recognitionMs,
+            provider,
+            "success",
+          );
+        }
+        if (catalogMs !== undefined) {
+          recordCardLookupCatalogDuration(catalogMs, provider, "success");
+        }
+        recordCardLookupOutcome("success", provider);
+        request.log.info(
+          {
+            provider,
+            model,
+            recognitionMs,
+            catalogMs,
+            candidateCount: lookup.candidates.length,
+            outcome: "success",
+            quotaRemaining: limit.isAllowed ? undefined : limit.remaining,
+          },
+          "Card lookup completed",
+        );
         return reply
           .header("cache-control", "no-store")
           .header("pragma", "no-cache")
@@ -168,13 +236,41 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
         // quota unit. A client-caused failure (a rejected image, for
         // example) keeps the charge: the lookup did run.
         if (isRefundableLookupFailure(error)) refundQuota(quotaKey);
+
+        const outcome =
+          error instanceof ClientDisconnectedError
+            ? "client_disconnected"
+            : error instanceof ApplicationError
+              ? error.code
+              : "internal_error";
+        if (recognitionMs !== undefined) {
+          recordCardLookupRecognitionDuration(recognitionMs, provider, outcome);
+        }
+        if (catalogMs !== undefined) {
+          recordCardLookupCatalogDuration(catalogMs, provider, outcome);
+        }
+        recordCardLookupOutcome(outcome, provider);
+        if (MEDIA_REJECTION_CODES.has(outcome)) {
+          recordCardLookupMediaRejected(outcome);
+        } else if (outcome.startsWith("card_recognition_")) {
+          recordCardLookupProviderFailure(provider, outcome);
+        }
+        // NEVER log image bytes, bearer tokens, or raw model output here --
+        // only the classified outcome and timing metadata above.
+        request.log.info(
+          {
+            provider,
+            model,
+            recognitionMs,
+            catalogMs,
+            outcome,
+          },
+          "Card lookup did not complete",
+        );
+
         if (error instanceof ClientDisconnectedError) {
           // The client is gone: this is its own outcome, not a provider or
           // catalog failure, and there is nobody left to send a body to.
-          request.log.info(
-            { outcome: "client_disconnected" },
-            "Card lookup abandoned: client disconnected",
-          );
           reply.hijack();
           return;
         }

@@ -28,6 +28,9 @@ HOST=0.0.0.0                                # container default
 PORT=4100                                   # platform PORT is also accepted
 LOG_LEVEL=info
 CARD_LOOKUP_MAX_CONCURRENCY=2               # concurrent vision-recognition calls admitted; excess requests get a fast 503
+OTEL_EXPORTER_OTLP_ENDPOINT=                # optional; unset means no telemetry at all (today's behavior)
+OTEL_SERVICE_NAME=collectcapture-card-lookups
+OTEL_EXPORT_INTERVAL_MS=60000
 ```
 
 `CARD_LOOKUP_MAX_CONCURRENCY` only gates the vision-recognition phase; a manual-query lookup (collector-edited search text, no image recognition) is never gated and always runs. A rejected request responds `503 card_lookup_busy` with `Retry-After: 5` and does not consume the caller's 30-lookups/hour quota. Set it to `1` for a single local Ollama instance, which can only run one vision request at a time regardless of how many arrive concurrently; the local Ollama overlays do this and also set `OLLAMA_NUM_PARALLEL=1` to match.
@@ -95,6 +98,30 @@ At startup the service logs a warning if the selected provider's timeout plus th
 - Do not enable sticky caches or response caching for `POST /v1/card-lookups`; the application returns `Cache-Control: no-store` and `Pragma: no-cache`.
 
 CollectFolio should call the public base URL plus `/v1/card-lookups` and send its own Supabase access token. The service verifies that token against the independently configured CollectFolio issuer/JWKS; CollectCapture application tokens are never a fallback.
+
+## Telemetry and metrics
+
+Telemetry is entirely optional: unset `OTEL_EXPORTER_OTLP_ENDPOINT` and the service starts exactly as it does today -- no exporter, no metrics reader, nothing initialized. Setting it wires the same OpenTelemetry Node SDK the main LocalClear API uses (traces plus a periodic metrics reader exporting to `<endpoint>/v1/traces` and `<endpoint>/v1/metrics`), tagged with `OTEL_SERVICE_NAME` and `NODE_ENV`.
+
+Every request also gets one structured log line (via the request logger, so it inherits `LOG_LEVEL` and standard redaction) summarizing the lookup:
+
+- `"Card lookup completed"` (a successful lookup) -- `provider`, `model`, `recognitionMs` (absent for a manual-query lookup, which never runs recognition), `catalogMs`, `candidateCount`, `outcome: "success"`, `quotaRemaining`.
+- `"Card lookup did not complete"` (any other outcome) -- the same fields, with `outcome` set to one of the [recognition provider error codes](collectfolio-card-lookup.md#recognition-provider-error-codes), a media-verification rejection reason, `client_disconnected`, or `internal_error`.
+- `"Card lookup rejected: recognition capacity busy"` (a `503 card_lookup_busy`) -- `provider`, `model`, `outcome: "busy"`.
+
+None of these ever include image bytes, the bearer token, or raw model output -- only the fields listed above.
+
+Domain metrics recorded regardless of whether telemetry is initialized (a no-op until it is):
+
+| Metric                             | Kind           | Labels                | Meaning                                                                                                                         |
+| ---------------------------------- | -------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `card_lookup.recognition.duration` | histogram (ms) | `provider`, `outcome` | Recognition provider call duration, per attempt that actually ran                                                               |
+| `card_lookup.catalog.duration`     | histogram (ms) | `provider`, `outcome` | Catalog search duration, per attempt that actually ran                                                                          |
+| `card_lookup.lookups`              | counter        | `outcome`, `provider` | Completed lookups by outcome (`success`, a G16 code, a media-rejection reason, `client_disconnected`, `internal_error`, `busy`) |
+| `card_lookup.recognition.failures` | counter        | `provider`, `code`    | Recognition provider failures, by the `card_recognition_*` G16 classification                                                   |
+| `card_lookup.rate_limited`         | counter        | none                  | Requests rejected for exceeding the per-user 30-lookups/hour quota                                                              |
+| `card_lookup.busy`                 | counter        | none                  | Requests rejected because the vision concurrency gate was full                                                                  |
+| `card_lookup.media_rejected`       | counter        | `reason`              | Uploaded images rejected by media verification, by rejection reason                                                             |
 
 ## Deployment qualification
 

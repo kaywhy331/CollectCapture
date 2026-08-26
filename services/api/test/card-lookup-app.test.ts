@@ -712,6 +712,133 @@ describe("hourly quota refund and headers (G7)", () => {
   });
 });
 
+function collectLogLines(): {
+  lines: Record<string, unknown>[];
+  stream: { write(chunk: string): boolean };
+} {
+  const lines: Record<string, unknown>[] = [];
+  return {
+    lines,
+    stream: {
+      write(chunk: string) {
+        for (const line of chunk.split("\n")) {
+          if (line.trim()) lines.push(JSON.parse(line));
+        }
+        return true;
+      },
+    },
+  };
+}
+
+describe("card lookup structured logging (G12a)", () => {
+  const apps: Awaited<ReturnType<typeof buildCardLookupApp>>[] = [];
+  const authHeaders = {
+    authorization: "Bearer folio-token",
+    origin: "https://folio.example.test",
+  };
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  it("logs one structured line per successful lookup, and never the image or token", async () => {
+    const { lines, stream } = collectLogLines();
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      tokenVerifier: new StaticTokenVerifier(
+        new Map([
+          ["folio-token", { userId: "folio-user", email: null, roles: [] }],
+        ]),
+      ),
+      service: {
+        recognitionProviderName: "test-provider",
+        recognitionModel: "test-model",
+        async lookup(_request, context) {
+          context.onPhaseComplete?.({ phase: "recognition", durationMs: 12 });
+          context.onPhaseComplete?.({ phase: "catalog", durationMs: 34 });
+          return lookup;
+        },
+      } as never,
+      logger: { level: "info", stream: stream as never },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const completedLines = lines.filter(
+      (line) => line.msg === "Card lookup completed",
+    );
+    expect(completedLines).toHaveLength(1);
+    expect(completedLines[0]).toMatchObject({
+      provider: "test-provider",
+      model: "test-model",
+      recognitionMs: 12,
+      catalogMs: 34,
+      candidateCount: lookup.candidates.length,
+      outcome: "success",
+      quotaRemaining: 29,
+    });
+
+    const serializedLog = JSON.stringify(lines);
+    expect(serializedLog).not.toContain(imageDataUrl);
+    expect(serializedLog).not.toContain("folio-token");
+  });
+
+  it("logs the classified outcome for a failed lookup, never raw model output", async () => {
+    const { lines, stream } = collectLogLines();
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      tokenVerifier: new StaticTokenVerifier(
+        new Map([
+          ["folio-token", { userId: "folio-user", email: null, roles: [] }],
+        ]),
+      ),
+      service: {
+        recognitionProviderName: "groq",
+        recognitionModel: "qwen/qwen3.6-27b",
+        async lookup(_request, context) {
+          context.onPhaseComplete?.({ phase: "recognition", durationMs: 7 });
+          throw new ApplicationError(
+            502,
+            "card_recognition_invalid_output",
+            "The card recognition provider returned output CollectCapture could not use. Please try again.",
+          );
+        },
+      } as never,
+      logger: { level: "info", stream: stream as never },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(response.statusCode).toBe(502);
+
+    const completedLines = lines.filter(
+      (line) => line.msg === "Card lookup did not complete",
+    );
+    expect(completedLines).toHaveLength(1);
+    expect(completedLines[0]).toMatchObject({
+      provider: "groq",
+      model: "qwen/qwen3.6-27b",
+      recognitionMs: 7,
+      outcome: "card_recognition_invalid_output",
+    });
+    expect(completedLines[0]!.catalogMs).toBeUndefined();
+    const serializedLog = JSON.stringify(lines);
+    expect(serializedLog).not.toContain(imageDataUrl);
+  });
+});
+
 describe("client disconnect cancellation (route wiring)", () => {
   const apps: Awaited<ReturnType<typeof buildCardLookupApp>>[] = [];
 

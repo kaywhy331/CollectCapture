@@ -3,9 +3,22 @@ import {
   createCardLookupRuntime,
 } from "./card-lookup-app.js";
 import { readCardLookupConfig } from "./card-lookup-config.js";
-import { REDACTED_LOG_PATHS } from "./observability.js";
+import { initializeTelemetry, REDACTED_LOG_PATHS } from "./observability.js";
 
 const config = readCardLookupConfig();
+// Absent OTEL_EXPORTER_OTLP_ENDPOINT -> initializeTelemetry itself returns
+// `{enabled: false, ...}` and starts nothing: exactly today's behavior
+// (G12b). Every card_lookup.* metric recorded elsewhere in this service is
+// already safe to call unconditionally -- @opentelemetry/api's default
+// meter is a documented no-op until a MeterProvider like this one is
+// registered.
+const telemetry = initializeTelemetry({
+  endpoint: config.OTEL_EXPORTER_OTLP_ENDPOINT,
+  serviceName: config.OTEL_SERVICE_NAME,
+  serviceVersion: "0.1.0",
+  environment: process.env.NODE_ENV ?? "production",
+  exportIntervalMs: config.OTEL_EXPORT_INTERVAL_MS,
+});
 const sharedRuntimeOptions = {
   collectFolioSupabaseUrl: config.COLLECTFOLIO_SUPABASE_URL,
   ...(config.COLLECTFOLIO_SUPABASE_JWKS_URL
@@ -58,6 +71,7 @@ const app = await buildCardLookupApp({
     },
   },
 });
+app.addHook("onClose", async () => telemetry.shutdown());
 
 let closing = false;
 const close = async (signal: string) => {
