@@ -212,6 +212,7 @@ function configuredProvider(): CardRecognitionProvider {
       apiKey: config.GROQ_API_KEY!,
       model: config.GROQ_MODEL,
       timeoutMs: config.GROQ_TIMEOUT_MS,
+      reasoningEffort: config.GROQ_REASONING_EFFORT,
     });
   }
   return new OpenAICardRecognitionProvider({

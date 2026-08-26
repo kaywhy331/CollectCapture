@@ -17,6 +17,7 @@ OLLAMA_TIMEOUT_MS=120000
 GROQ_API_KEY=<required only for groq>
 GROQ_MODEL=qwen/qwen3.6-27b
 GROQ_TIMEOUT_MS=60000
+GROQ_REASONING_EFFORT=none                  # sent as reasoning_effort; blank disables the field
 COLLECTFOLIO_APP_URL=https://<exact-collectfolio-browser-origin>
 COLLECTFOLIO_SUPABASE_URL=https://<collectfolio-project>.supabase.co
 COLLECTFOLIO_SUPABASE_JWKS_URL=             # optional custom discovery URL

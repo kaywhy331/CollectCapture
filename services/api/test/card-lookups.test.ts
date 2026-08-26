@@ -268,6 +268,85 @@ describe("Groq card recognition", () => {
       ],
     });
   });
+
+  it("sends the configured reasoning effort for a non-default model name", async () => {
+    let requestBody: Record<string, any> = {};
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "llama-4-scout-17b",
+      reasoningEffort: "low",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: JSON.stringify({
+                    category: "magic",
+                    name: "Black Lotus",
+                    setName: null,
+                    collectorNumber: null,
+                    language: "en",
+                    visibleText: ["Black Lotus"],
+                    queries: ["Black Lotus"],
+                    confidence: 0.88,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "magic" }),
+    ).resolves.toMatchObject({ provider: "groq", model: "llama-4-scout-17b" });
+    expect(requestBody).toMatchObject({
+      model: "llama-4-scout-17b",
+      reasoning_effort: "low",
+    });
+  });
+
+  it("omits reasoning_effort when the configured value is empty", async () => {
+    let requestBody: Record<string, any> = {};
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "llama-4-scout-17b",
+      reasoningEffort: "",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: JSON.stringify({
+                    category: "magic",
+                    name: "Black Lotus",
+                    setName: null,
+                    collectorNumber: null,
+                    language: "en",
+                    visibleText: ["Black Lotus"],
+                    queries: ["Black Lotus"],
+                    confidence: 0.88,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    await provider.recognize({ imageDataUrl, categoryHint: "magic" });
+    expect(requestBody).not.toHaveProperty("reasoning_effort");
+  });
 });
 
 describe("stateless card lookup", () => {

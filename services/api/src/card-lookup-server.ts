@@ -34,6 +34,7 @@ const runtime =
           groqApiKey: config.GROQ_API_KEY!,
           groqModel: config.GROQ_MODEL,
           groqTimeoutMs: config.GROQ_TIMEOUT_MS,
+          groqReasoningEffort: config.GROQ_REASONING_EFFORT,
         })
       : createCardLookupRuntime({
           ...sharedRuntimeOptions,

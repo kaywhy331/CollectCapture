@@ -232,6 +232,7 @@ interface GroqCardRecognitionOptions {
   model: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  reasoningEffort?: string;
 }
 
 const GroqChatResponseSchema = z
@@ -254,12 +255,14 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
   readonly #apiKey: string;
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
+  readonly #reasoningEffort: string;
 
   constructor(options: GroqCardRecognitionOptions) {
     this.model = options.model.trim();
     this.#apiKey = options.apiKey.trim();
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? 60_000;
+    this.#reasoningEffort = (options.reasoningEffort ?? "none").trim();
     if (!this.model) throw new Error("The Groq model must not be empty");
     if (!this.#apiKey) throw new Error("The Groq API key must not be empty");
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1_000) {
@@ -286,8 +289,8 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
             stream: false,
             temperature: 0,
             max_completion_tokens: 2_048,
-            ...(this.model === "qwen/qwen3.6-27b"
-              ? { reasoning_effort: "none" }
+            ...(this.#reasoningEffort
+              ? { reasoning_effort: this.#reasoningEffort }
               : {}),
             response_format: { type: "json_object" },
             messages: [

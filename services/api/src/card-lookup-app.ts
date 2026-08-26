@@ -44,6 +44,7 @@ export type CardLookupRuntimeOptions = CardLookupRuntimeBaseOptions &
         groqApiKey: string;
         groqModel: string;
         groqTimeoutMs: number;
+        groqReasoningEffort?: string;
       }
   );
 
@@ -80,6 +81,9 @@ export function createCardLookupRuntime(
               apiKey: options.groqApiKey,
               model: options.groqModel,
               timeoutMs: options.groqTimeoutMs,
+              ...(options.groqReasoningEffort === undefined
+                ? {}
+                : { reasoningEffort: options.groqReasoningEffort }),
             })
           : new OpenAICardRecognitionProvider({
               apiKey: options.openAIApiKey,

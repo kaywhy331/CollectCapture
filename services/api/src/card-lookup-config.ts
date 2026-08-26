@@ -41,6 +41,7 @@ const CardLookupEnvironmentSchema = z
       .min(1_000)
       .max(600_000)
       .default(60_000),
+    GROQ_REASONING_EFFORT: z.string().trim().default("none"),
     COLLECTFOLIO_APP_URL: z.string().url(),
     COLLECTFOLIO_SUPABASE_URL: z.string().url(),
     COLLECTFOLIO_SUPABASE_JWKS_URL: OptionalUrlSchema,
