@@ -436,11 +436,14 @@ export class TcgcsvCardCatalogProvider implements CardCatalogProvider {
         }
         successfulRequests += 1;
         for (const product of result.value) {
-          const candidate = normalizeTcgcsvCandidate(
-            product,
-            input.recognition,
-          );
-          if (candidate) candidates.set(candidate.externalId, candidate);
+          const outcome = normalizeTcgcsvCandidate(product, input.recognition);
+          if (outcome.ok) {
+            candidates.set(outcome.candidate.externalId, outcome.candidate);
+          } else if (outcome.reason === "malformed") {
+            warnings.add(
+              "catalog_candidate_skipped: a catalog row did not match the expected candidate shape and was skipped",
+            );
+          }
         }
       });
       if (candidates.size >= input.limit) break;
@@ -694,18 +697,31 @@ function uniqueQueries(queries: readonly string[]): string[] {
   ].slice(0, 6);
 }
 
+/** Schema bounds `normalizeTcgcsvCandidate` truncates salvageable catalog
+ * text into before validating (G4) -- kept in sync with
+ * `CardLookupCandidateSchema`'s `name`/`game` limits in
+ * `packages/domain/src/card-lookups.ts`. */
+const MAX_CANDIDATE_NAME_LENGTH = 240;
+const MAX_CANDIDATE_GAME_LENGTH = 120;
+
+type NormalizedCandidateOutcome =
+  | { ok: true; candidate: CardLookupCandidate }
+  | { ok: false; reason?: "malformed" };
+
 function normalizeTcgcsvCandidate(
   product: Record<string, unknown>,
   recognition: CardRecognition,
-): CardLookupCandidate | null {
+): NormalizedCandidateOutcome {
   const categoryId = positiveInteger(product.categoryId);
   const groupId = positiveInteger(product.groupId);
   const productId = positiveInteger(product.productId);
-  if (!categoryId || !groupId || !productId) return null;
-  const name =
+  if (!categoryId || !groupId || !productId) return { ok: false };
+  const name = clampToLength(
     stringValue(product.name) ||
-    stringValue(product.cleanName) ||
-    `Product ${productId}`;
+      stringValue(product.cleanName) ||
+      `Product ${productId}`,
+    MAX_CANDIDATE_NAME_LENGTH,
+  );
   const extended = Array.isArray(product.extendedData)
     ? product.extendedData.filter(isRecord)
     : [];
@@ -728,7 +744,10 @@ function normalizeTcgcsvCandidate(
     externalId,
     provider: "tcgcsv",
     category: `tcgcsv-category-${categoryId}`,
-    game: categoryName(categoryId, stringValue(product.categoryName)),
+    game: clampToLength(
+      categoryName(categoryId, stringValue(product.categoryName)),
+      MAX_CANDIDATE_GAME_LENGTH,
+    ),
     name,
     setName: stringValue(product.groupName),
     setCode: stringValue(product.groupAbbreviation),
@@ -753,7 +772,20 @@ function normalizeTcgcsvCandidate(
     groupId,
     productId,
   } as const;
-  return CardLookupCandidateSchema.parse(candidate);
+  // A `safeParse` here (never the unguarded `parse` this replaced) is load
+  // bearing: it keeps one malformed upstream catalog row from ever
+  // surfacing as a client-facing `400` through the shared ZodError handler
+  // (G4). After this point, no catalog data can reach that mapping --
+  // salvageable text was already clamped to the schema's bounds above, and
+  // anything still invalid is dropped with a warning instead of thrown.
+  const parsed = CardLookupCandidateSchema.safeParse(candidate);
+  return parsed.success
+    ? { ok: true, candidate: parsed.data }
+    : { ok: false, reason: "malformed" };
+}
+
+function clampToLength(value: string, maxLength: number): string {
+  return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
 
 function scoreCandidate(

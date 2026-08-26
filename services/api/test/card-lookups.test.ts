@@ -696,6 +696,121 @@ describe("TCGCSV catalog lookup", () => {
     expect(pulls).toBe(3);
     expect(cancelled).toBe(true);
   });
+
+  it("skips a malformed catalog row and warns instead of failing the lookup (G4)", async () => {
+    const provider = new TcgcsvCardCatalogProvider({
+      baseUrl: "https://catalog.example.test",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            products: [
+              {
+                // No usable name/game text at all and a `year` that cannot
+                // ever satisfy the candidate schema, however the free-text
+                // fields are clamped: dropped by `safeParse`, not thrown.
+                categoryId: 3,
+                groupId: 123,
+                productId: 456,
+                categoryName: "x".repeat(500),
+                name: "y".repeat(500),
+              },
+              {
+                categoryId: 3,
+                categoryName: "Pokemon",
+                groupId: 123,
+                groupName: "Obsidian Flames",
+                groupAbbreviation: "OBF",
+                groupPublishedOn: "2023-08-11",
+                productId: 457,
+                name: "Blastoise ex",
+                cardNumber: "224/197",
+                rarity: "Special Illustration Rare",
+                prices: [{ subtypeName: "Holofoil", marketPrice: 99 }],
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+
+    const result = await provider.search({
+      recognition,
+      category: "pokemon",
+      limit: 12,
+      authorization: "Bearer folio-token",
+    });
+
+    // The first row's 500-character name/category still validate after
+    // being clamped to the schema's bounds -- it survives, truncated.
+    expect(result.candidates).toHaveLength(2);
+    const truncated = result.candidates.find(
+      (candidateItem) => candidateItem.externalId === "3:123:456",
+    );
+    expect(truncated?.name).toHaveLength(240);
+    expect(truncated?.game).toHaveLength(120);
+    expect(
+      result.candidates.some(
+        (candidateItem) => candidateItem.externalId === "3:123:457",
+      ),
+    ).toBe(true);
+    expect(
+      result.warnings.some((warning) =>
+        warning.startsWith("catalog_candidate_skipped"),
+      ),
+    ).toBe(false);
+  });
+
+  it("drops a row that is still invalid after clamping and surfaces a warning (G4)", async () => {
+    const provider = new TcgcsvCardCatalogProvider({
+      baseUrl: "https://catalog.example.test",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            products: [
+              {
+                categoryId: 3,
+                groupId: 123,
+                productId: 456,
+                // `setName` has no fallback and no clamp is applied to it
+                // by this fix: an over-long value stays over the schema's
+                // 240-character bound, so this row must be skipped.
+                name: "Charizard ex",
+                groupName: "z".repeat(500),
+              },
+              {
+                categoryId: 3,
+                categoryName: "Pokemon",
+                groupId: 123,
+                groupName: "Obsidian Flames",
+                groupAbbreviation: "OBF",
+                groupPublishedOn: "2023-08-11",
+                productId: 457,
+                name: "Blastoise ex",
+                cardNumber: "224/197",
+                rarity: "Special Illustration Rare",
+                prices: [{ subtypeName: "Holofoil", marketPrice: 99 }],
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+
+    const result = await provider.search({
+      recognition,
+      category: "pokemon",
+      limit: 12,
+      authorization: "Bearer folio-token",
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.externalId).toBe("3:123:457");
+    expect(
+      result.warnings.some((warning) =>
+        warning.startsWith("catalog_candidate_skipped"),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("card lookup route", () => {
