@@ -55,7 +55,7 @@ The lower-level launcher remains available for scripting. With Docker Desktop al
 
 The first lower-level invocation creates the ignored file `.env.card-lookups.red-pc` and stops. Without the bootstrap, fill in the three required CollectFolio connection values plus `GROQ_API_KEY` or `OLLAMA_API_KEY` for the selected cloud provider, then run the same command again. Local Ollama needs no model-provider key. `-Tunnel` auto-detects bootstrap-created local tunnel credentials; the manual remotely managed alternative additionally requires a connector token. Both paths are described in the [public HTTPS tunnel guide](red-pc-cloudflare-tunnel.md).
 
-The local Ollama mode starts Ollama, persists models in a named Docker volume, pulls `qwen3.5:4b`, warms it, and only then starts the API. The first pull is several gigabytes and can take a while. Later starts reuse the model. `-Nvidia` requires Docker Desktop's WSL2 backend, a supported NVIDIA GPU, and a current Windows NVIDIA driver.
+The local Ollama mode starts Ollama, persists models in a named Docker volume, pulls `qwen3.5:4b`, warms it, and only then starts the API. The first pull is several gigabytes and can take a while. Later starts reuse the model. `-Nvidia` requires Docker Desktop's WSL2 backend, a supported NVIDIA GPU, and a current Windows NVIDIA driver. Both local Ollama overlays set `OLLAMA_KEEP_ALIVE=-1` and every recognition request also asks for indefinite `keep_alive`, so the warmed model stays resident in RAM/VRAM by design instead of unloading between scans.
 
 Useful commands retain the provider selection:
 

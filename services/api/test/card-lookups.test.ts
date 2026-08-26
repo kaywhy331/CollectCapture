@@ -140,6 +140,7 @@ describe("Ollama card recognition", () => {
     expect(requestBody).toMatchObject({
       model: "qwen3.5:397b",
       stream: false,
+      keep_alive: -1,
       options: { temperature: 0 },
       messages: [
         { role: "system" },

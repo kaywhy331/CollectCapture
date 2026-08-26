@@ -1,3 +1,5 @@
 services:
   ollama:
     gpus: all
+    environment:
+      OLLAMA_KEEP_ALIVE: "-1"

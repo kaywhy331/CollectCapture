@@ -182,6 +182,7 @@ export class OllamaCardRecognitionProvider implements CardRecognitionProvider {
         body: JSON.stringify({
           model: this.model,
           stream: false,
+          keep_alive: -1,
           format: z.toJSONSchema(VisionRecognitionSchema),
           options: { temperature: 0 },
           messages: [
