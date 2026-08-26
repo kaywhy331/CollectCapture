@@ -44,7 +44,9 @@ services:
     command:
       - |
         ollama pull "$${OLLAMA_MODEL}"
-        ollama run "$${OLLAMA_MODEL}" "Reply with READY only." >/dev/null
+        printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' | base64 -d > /tmp/warmup.png
+        ollama run "$${OLLAMA_MODEL}" "Reply with READY only. /tmp/warmup.png" >/tmp/warmup-response.txt
+        test -s /tmp/warmup-response.txt
     restart: "no"
 
 volumes:
