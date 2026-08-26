@@ -204,3 +204,105 @@ describe("standalone card lookup service", () => {
     expect(preflight.headers.get("access-control-max-age")).toBe("86400");
   });
 });
+
+describe("tunnel-mode rate limiting", () => {
+  const apps: Awaited<ReturnType<typeof buildCardLookupApp>>[] = [];
+  // The address the cloudflared sidecar itself connects from over the
+  // private Compose network; a real Internet client cannot present this.
+  const privateSocketAddress = "10.0.0.5";
+  const publicSocketAddress = "203.0.113.99";
+  const unreachableService = {
+    async lookup(): Promise<never> {
+      throw new Error("not called");
+    },
+  };
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  async function remainingAfter(
+    app: Awaited<ReturnType<typeof buildCardLookupApp>>,
+    init: { remoteAddress: string; cfConnectingIp: string },
+  ): Promise<number> {
+    const response = await app.inject({
+      method: "GET",
+      url: "/health",
+      remoteAddress: init.remoteAddress,
+      headers: { "cf-connecting-ip": init.cfConnectingIp },
+    });
+    expect(response.statusCode).toBe(200);
+    return Number(response.headers["x-ratelimit-remaining"]);
+  }
+
+  it("keys the rate limiter on cf-connecting-ip when the socket is the private tunnel address", async () => {
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      trustedProxyMode: "cloudflare-tunnel",
+      tokenVerifier: new StaticTokenVerifier(new Map()),
+      service: unreachableService,
+    });
+    apps.push(app);
+
+    const visitorA1 = await remainingAfter(app, {
+      remoteAddress: privateSocketAddress,
+      cfConnectingIp: "203.0.113.10",
+    });
+    const visitorA2 = await remainingAfter(app, {
+      remoteAddress: privateSocketAddress,
+      cfConnectingIp: "203.0.113.10",
+    });
+    // Same header, same private socket: one shared, decrementing bucket.
+    expect(visitorA2).toBe(visitorA1 - 1);
+
+    const visitorB1 = await remainingAfter(app, {
+      remoteAddress: privateSocketAddress,
+      cfConnectingIp: "203.0.113.20",
+    });
+    // A different visitor's header opens an independent, fresh bucket.
+    expect(visitorB1).toBe(visitorA1);
+  });
+
+  it("ignores a forged cf-connecting-ip header from a public source address", async () => {
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      trustedProxyMode: "cloudflare-tunnel",
+      tokenVerifier: new StaticTokenVerifier(new Map()),
+      service: unreachableService,
+    });
+    apps.push(app);
+
+    const first = await remainingAfter(app, {
+      remoteAddress: publicSocketAddress,
+      cfConnectingIp: "198.51.100.1",
+    });
+    // A different forged header value from the same public socket address
+    // must land in the same bucket: the header is not trusted here.
+    const second = await remainingAfter(app, {
+      remoteAddress: publicSocketAddress,
+      cfConnectingIp: "198.51.100.2",
+    });
+    expect(second).toBe(first - 1);
+  });
+
+  it("keeps default-mode rate limiting byte-for-byte unchanged", async () => {
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      tokenVerifier: new StaticTokenVerifier(new Map()),
+      service: unreachableService,
+    });
+    apps.push(app);
+
+    const first = await remainingAfter(app, {
+      remoteAddress: privateSocketAddress,
+      cfConnectingIp: "203.0.113.10",
+    });
+    // A different header value from the same socket must not open a fresh
+    // bucket outside cloudflare-tunnel mode: today's socket-only keying.
+    const second = await remainingAfter(app, {
+      remoteAddress: privateSocketAddress,
+      cfConnectingIp: "203.0.113.20",
+    });
+    expect(second).toBe(first - 1);
+  });
+});

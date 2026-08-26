@@ -1,4 +1,8 @@
 services:
+  card-lookups:
+    environment:
+      TRUSTED_PROXY_MODE: cloudflare-tunnel
+
   cloudflared:
     image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2026.8.2}
     command:

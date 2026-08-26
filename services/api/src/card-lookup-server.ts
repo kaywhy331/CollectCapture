@@ -45,6 +45,7 @@ const runtime =
 const app = await buildCardLookupApp({
   ...runtime,
   allowedOrigin: new URL(config.COLLECTFOLIO_APP_URL).origin,
+  trustedProxyMode: config.TRUSTED_PROXY_MODE,
   logger: {
     level: config.LOG_LEVEL,
     redact: {

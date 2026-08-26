@@ -128,9 +128,13 @@ The response must allow the exact `Origin` value. Do not use `*` for authenticat
 
 ## Security boundary
 
-The published hostname is reachable from the Internet, but the card-lookup route remains protected by CollectCapture's Supabase JWT verification, exact-origin CORS policy, request-size limits, and rate limits. The launcher does not create a Cloudflare Access application.
+The published hostname is reachable from the Internet, but the card-lookup route remains protected by CollectCapture's Supabase JWT verification, exact-origin CORS policy, request-size limits, and rate limits. Every request through this sidecar shares one socket address at the API container, so `TRUSTED_PROXY_MODE=cloudflare-tunnel` (set by default in these overlays) keys the pre-auth rate limiter on Cloudflare's `Cf-Connecting-Ip` header instead — but only when the connecting socket is the private address the `cloudflared` sidecar itself uses, so a request that reaches the API any other way cannot forge that header to dodge the limit. This narrows, but does not remove, the exposure of a single shared bucket; add the edge rule below for real per-visitor limiting. The launcher does not create a Cloudflare Access application.
 
 That choice avoids putting an Access service token in browser code. If Access is introduced later, design a browser-safe user authentication flow and verify CORS preflights and bearer-token forwarding before enabling it. Do not weaken CollectCapture's JWT checks because the request arrived through Cloudflare.
+
+### Add a Cloudflare edge rate-limiting rule (recommended)
+
+As defense in depth ahead of the application's own limits, add a Cloudflare rate-limiting rule on the published hostname: in the dashboard, go to **Security > WAF > Rate limiting rules**, create a rule scoped to the tunnel hostname, and start with something like 60 requests/minute per IP. This throttles abusive traffic at Cloudflare's edge before it ever reaches RED PC, independent of anything the API container can see about the connecting socket.
 
 Keep `.env.card-lookups.red-pc` and `.cloudflared/` private; both are ignored by Git. If a manual connector token is exposed, rotate it in the Cloudflare dashboard and replace the local value. If a local credential JSON is exposed, delete and recreate that tunnel. The token should never appear in Compose command arguments; the manual sidecar receives it through its environment.
 

@@ -46,6 +46,7 @@ const CardLookupEnvironmentSchema = z
     COLLECTFOLIO_SUPABASE_URL: z.string().url(),
     COLLECTFOLIO_SUPABASE_JWKS_URL: OptionalUrlSchema,
     COLLECTFOLIO_CATALOG_URL: z.string().url(),
+    TRUSTED_PROXY_MODE: z.enum(["none", "cloudflare-tunnel"]).default("none"),
   })
   .strip()
   .superRefine((value, context) => {
@@ -176,6 +177,7 @@ const CardLookupEnvironmentSchema = z
   });
 
 export type CardLookupConfig = z.infer<typeof CardLookupEnvironmentSchema>;
+export type TrustedProxyMode = CardLookupConfig["TRUSTED_PROXY_MODE"];
 
 export function readCardLookupConfig(
   environment: NodeJS.ProcessEnv = process.env,

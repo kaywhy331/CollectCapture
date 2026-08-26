@@ -1,13 +1,16 @@
+import { isIPv4, isIPv6 } from "node:net";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import Fastify, {
   type FastifyInstance,
+  type FastifyRequest,
   type FastifyServerOptions,
 } from "fastify";
 import { ZodError } from "zod";
 import { JwksTokenVerifier, type TokenVerifier } from "./auth.js";
 import { cardLookupHttpPlugin } from "./card-lookup-http.js";
+import type { TrustedProxyMode } from "./card-lookup-config.js";
 import {
   GroqCardRecognitionProvider,
   OllamaCardRecognitionProvider,
@@ -99,6 +102,55 @@ export function createCardLookupRuntime(
 export interface BuildCardLookupAppOptions extends CardLookupRuntime {
   allowedOrigin: string;
   logger?: FastifyServerOptions["logger"];
+  /**
+   * `"cloudflare-tunnel"` keys the pre-auth global rate limiter on the
+   * `cf-connecting-ip` header instead of the socket address, but only when
+   * the socket address is the private/loopback range the cloudflared
+   * sidecar connects from — a public source cannot forge the header to hop
+   * buckets. Defaults to `"none"`, which is byte-for-byte today's behavior.
+   */
+  trustedProxyMode?: TrustedProxyMode;
+}
+
+/**
+ * RFC1918 (10/8, 172.16/12, 192.168/16), IPv4 loopback (127/8), IPv6
+ * loopback (::1), and unique local IPv6 (fc00::/7) — the address ranges the
+ * cloudflared sidecar connects from over the private Compose network. This
+ * never changes `request.ip`/`trustProxy`; it only decides whether the
+ * rate-limit key generator may trust `cf-connecting-ip`.
+ */
+function isPrivateOrLoopbackAddress(address: string): boolean {
+  const normalized = address.startsWith("::ffff:")
+    ? address.slice("::ffff:".length)
+    : address;
+  if (isIPv4(normalized)) {
+    const octets = normalized.split(".").map(Number);
+    const [firstOctet, secondOctet] = octets;
+    return (
+      firstOctet === 127 ||
+      firstOctet === 10 ||
+      (firstOctet === 172 && secondOctet! >= 16 && secondOctet! <= 31) ||
+      (firstOctet === 192 && secondOctet === 168)
+    );
+  }
+  if (isIPv6(address)) {
+    const lower = address.toLowerCase();
+    return lower === "::1" || /^f[cd][0-9a-f]{2}:/.test(lower);
+  }
+  return false;
+}
+
+function cloudflareTunnelRateLimitKeyGenerator(
+  request: FastifyRequest,
+): string {
+  const socketAddress = request.socket?.remoteAddress ?? "";
+  const forwardedHeader = request.headers["cf-connecting-ip"];
+  const forwardedFor =
+    typeof forwardedHeader === "string" ? forwardedHeader.trim() : "";
+  if (forwardedFor && isPrivateOrLoopbackAddress(socketAddress)) {
+    return forwardedFor;
+  }
+  return socketAddress;
 }
 
 export async function buildCardLookupApp(
@@ -128,6 +180,9 @@ export async function buildCardLookupApp(
     global: true,
     max: 120,
     timeWindow: "1 minute",
+    ...(options.trustedProxyMode === "cloudflare-tunnel"
+      ? { keyGenerator: cloudflareTunnelRateLimitKeyGenerator }
+      : {}),
     errorResponseBuilder: () => ({
       error: "rate_limited",
       message: "Too many requests. Please try again shortly.",
