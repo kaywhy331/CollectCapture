@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { SellerDevice } from "@localclear/domain";
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import {
+  createRemoteJWKSet,
+  errors as joseErrors,
+  jwtVerify,
+  type JWTPayload,
+} from "jose";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Repository } from "./repository.js";
 
@@ -141,6 +146,26 @@ export class StaticTokenVerifier implements TokenVerifier {
   }
 }
 
+/**
+ * Distinguishes a JWKS key-retrieval infrastructure failure (the discovery
+ * endpoint is unreachable, timed out, or returned a bad response) from an
+ * actual token problem (bad signature, expired, wrong issuer/audience, no
+ * matching key). jose throws the base {@link joseErrors.JOSEError} directly
+ * only for the two JWKS-fetch failures below it does not have a dedicated
+ * subclass for; every token-validation failure uses a specific subclass
+ * instead, so checking the exact constructor keeps those told apart. A raw
+ * `TypeError` (Node's fetch throws `TypeError: fetch failed` for DNS/connect
+ * failures) never comes from token validation either.
+ */
+function isAuthenticationInfrastructureFailure(error: unknown): boolean {
+  if (error instanceof joseErrors.JWKSTimeout) return true;
+  if (error instanceof TypeError) return true;
+  return (
+    error instanceof joseErrors.JOSEError &&
+    error.constructor === joseErrors.JOSEError
+  );
+}
+
 export function createAuthenticationHook(verifier: TokenVerifier) {
   return async function authenticate(
     request: FastifyRequest,
@@ -159,7 +184,18 @@ export function createAuthenticationHook(verifier: TokenVerifier) {
       request.principal = await verifier.verify(
         authorization.slice("Bearer ".length),
       );
-    } catch {
+    } catch (error) {
+      if (isAuthenticationInfrastructureFailure(error)) {
+        await reply
+          .code(503)
+          .header("retry-after", "30")
+          .send({
+            error: "authentication_unavailable",
+            message:
+              "CollectCapture could not reach the sign-in service. Please try again shortly.",
+          });
+        return;
+      }
       await reply.code(401).send({
         error: "unauthorized",
         message: "The bearer token is invalid or expired",

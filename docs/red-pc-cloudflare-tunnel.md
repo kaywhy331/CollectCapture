@@ -141,6 +141,7 @@ Keep `.env.card-lookups.red-pc` and `.cloudflared/` private; both are ignored by
 - **DNS/1016 error:** confirm the proxied CNAME targets this tunnel and that at least one connector is Healthy.
 - **Browser reports CORS:** make `COLLECTFOLIO_APP_URL` match the browser's scheme, hostname, and port exactly, then restart the stack.
 - **API returns 401:** check the CollectFolio Supabase issuer/JWKS values and confirm CollectFolio sends its current bearer token. This is separate from Cloudflare Tunnel authentication.
+- **API returns 503 `authentication_unavailable`:** this means the box cannot reach the CollectFolio Supabase JWKS endpoint (network outage, DNS failure, or a slow/unreachable discovery URL), not that the token itself is invalid. Check RED PC's outbound connectivity to `COLLECTFOLIO_SUPABASE_URL`/`COLLECTFOLIO_SUPABASE_JWKS_URL` and retry after the `retry-after` window.
 - **Hosted CollectFolio still calls HTTP:** change its card-lookup base URL to the tunnel's `https://` origin and redeploy CollectFolio through its owner; no CollectFolio files are changed by this setup.
 
 ## Disable or roll back
