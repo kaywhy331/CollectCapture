@@ -35,6 +35,8 @@ const runtime =
           groqModel: config.GROQ_MODEL,
           groqTimeoutMs: config.GROQ_TIMEOUT_MS,
           groqReasoningEffort: config.GROQ_REASONING_EFFORT,
+          groqResponseFormat: config.GROQ_RESPONSE_FORMAT,
+          groqMaxCompletionTokens: config.GROQ_MAX_COMPLETION_TOKENS,
         })
       : createCardLookupRuntime({
           ...sharedRuntimeOptions,

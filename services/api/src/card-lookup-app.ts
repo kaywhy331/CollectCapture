@@ -50,6 +50,8 @@ export type CardLookupRuntimeOptions = CardLookupRuntimeBaseOptions &
         groqModel: string;
         groqTimeoutMs: number;
         groqReasoningEffort?: string;
+        groqResponseFormat?: "json_object" | "json_schema";
+        groqMaxCompletionTokens?: number;
       }
   );
 
@@ -118,6 +120,12 @@ export function createCardLookupRuntime(
               ...(options.groqReasoningEffort === undefined
                 ? {}
                 : { reasoningEffort: options.groqReasoningEffort }),
+              ...(options.groqResponseFormat === undefined
+                ? {}
+                : { responseFormat: options.groqResponseFormat }),
+              ...(options.groqMaxCompletionTokens === undefined
+                ? {}
+                : { maxCompletionTokens: options.groqMaxCompletionTokens }),
             })
           : new OpenAICardRecognitionProvider({
               apiKey: options.openAIApiKey,

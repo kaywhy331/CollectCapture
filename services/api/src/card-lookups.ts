@@ -64,6 +64,88 @@ export interface CardRecognitionProvider {
   }): Promise<CardRecognition>;
 }
 
+/**
+ * Marks a recognition failure that happened AFTER a provider's HTTP/SDK call
+ * itself succeeded -- the response arrived, but its content could not be
+ * parsed as JSON or did not validate against {@link VisionRecognitionSchema}.
+ * Distinguishing this from a network/timeout/auth failure lets
+ * {@link withOneValidationRetry} retry only this class of failure (G5), and
+ * lets the provider catch sites classify it as `card_recognition_invalid_output`
+ * rather than `_unavailable`/`_timeout` (G16).
+ */
+export class RecognitionOutputValidationError extends Error {
+  constructor(cause: unknown) {
+    super("The recognition provider's output did not parse or validate", {
+      cause,
+    });
+    this.name = "RecognitionOutputValidationError";
+  }
+}
+
+/**
+ * Runs a provider attempt once, then retries it exactly once more if (and
+ * only if) it failed with a {@link RecognitionOutputValidationError} -- a
+ * malformed model response is often a one-off sampling fluke, unlike a
+ * timeout or a network/auth failure, which a second identical call would
+ * not fix (G5b). Never retries once the caller's signal is already
+ * aborted: the client is gone, so spending another provider call (and, for
+ * a paid provider, its cost) on nobody would be wasteful.
+ */
+async function withOneValidationRetry<T>(
+  signal: AbortSignal | undefined,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await attempt();
+  } catch (error) {
+    if (!(error instanceof RecognitionOutputValidationError)) throw error;
+    if (signal?.aborted) throw error;
+    return await attempt();
+  }
+}
+
+/**
+ * A lenient pass over a provider's raw (already-JSON-parsed) recognition
+ * object, applied before the strict {@link VisionRecognitionSchema} parse
+ * (G5a): trims every string, clamps free-text fields and array lengths to
+ * the schema's own bounds instead of letting an over-long value fail
+ * validation outright, and drops/dedupes queries that could never satisfy
+ * the schema's 2-character minimum. This never invents or corrects
+ * content -- it only removes whitespace and truncates/drops what the
+ * strict schema would have rejected anyway, so a still-malformed payload
+ * fails validation exactly as before and falls through to the retry (G5b).
+ */
+function salvageRecognitionPayload(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const salvaged: Record<string, unknown> = { ...raw };
+  const stringBounds: Record<string, number> = {
+    name: 160,
+    setName: 160,
+    collectorNumber: 80,
+    language: 35,
+  };
+  for (const [field, maxLength] of Object.entries(stringBounds)) {
+    const value = salvaged[field];
+    if (typeof value === "string") {
+      salvaged[field] = clampToLength(value.trim(), maxLength);
+    }
+  }
+  if (Array.isArray(salvaged.visibleText)) {
+    salvaged.visibleText = salvaged.visibleText
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => clampToLength(entry.trim(), 240))
+      .slice(0, 30);
+  }
+  if (Array.isArray(salvaged.queries)) {
+    const cleaned = salvaged.queries
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => clampToLength(entry.trim(), 240))
+      .filter((entry) => entry.length >= 2);
+    salvaged.queries = [...new Set(cleaned)].slice(0, 6);
+  }
+  return salvaged;
+}
+
 export class OpenAICardRecognitionProvider implements CardRecognitionProvider {
   readonly providerName = "openai";
   readonly model: string;
@@ -99,7 +181,7 @@ export class OpenAICardRecognitionProvider implements CardRecognitionProvider {
         detail: "high",
       },
     ];
-    try {
+    const attempt = async (): Promise<CardRecognition> => {
       const response = await this.#client.responses.parse(
         {
           model: this.model,
@@ -120,16 +202,27 @@ export class OpenAICardRecognitionProvider implements CardRecognitionProvider {
         { signal: input.signal },
       );
       if (!response.output_parsed) {
-        throw new Error(
-          "The recognition provider returned no structured output",
+        throw new RecognitionOutputValidationError(
+          new Error("The recognition provider returned no structured output"),
         );
       }
+      let recognition: z.infer<typeof VisionRecognitionSchema>;
+      try {
+        recognition = VisionRecognitionSchema.parse(
+          salvageRecognitionPayload(response.output_parsed),
+        );
+      } catch (error) {
+        throw new RecognitionOutputValidationError(error);
+      }
       return CardRecognitionSchema.parse({
-        ...VisionRecognitionSchema.parse(response.output_parsed),
+        ...recognition,
         source: "vision",
         provider: this.providerName,
         model: this.model,
       });
+    };
+    try {
+      return await withOneValidationRetry(input.signal, attempt);
     } catch (error) {
       throw new ApplicationError(
         502,
@@ -180,7 +273,7 @@ export class OllamaCardRecognitionProvider implements CardRecognitionProvider {
     categoryHint: CardLookupCategory;
     signal?: AbortSignal | undefined;
   }): Promise<CardRecognition> {
-    try {
+    const attempt = async (): Promise<CardRecognition> => {
       const encodedImage = encodedCardImage(input.imageDataUrl);
       const response = await this.#fetch(new URL("api/chat", this.#baseUrl), {
         method: "POST",
@@ -216,16 +309,26 @@ export class OllamaCardRecognitionProvider implements CardRecognitionProvider {
           `The recognition provider returned HTTP ${response.status}`,
         );
       }
-      const envelope = OllamaChatResponseSchema.parse(JSON.parse(responseText));
-      const recognition = VisionRecognitionSchema.parse(
-        JSON.parse(envelope.message.content),
-      );
+      let recognition: z.infer<typeof VisionRecognitionSchema>;
+      try {
+        const envelope = OllamaChatResponseSchema.parse(
+          JSON.parse(responseText),
+        );
+        recognition = VisionRecognitionSchema.parse(
+          salvageRecognitionPayload(JSON.parse(envelope.message.content)),
+        );
+      } catch (error) {
+        throw new RecognitionOutputValidationError(error);
+      }
       return CardRecognitionSchema.parse({
         ...recognition,
         source: "vision",
         provider: this.providerName,
         model: this.model,
       });
+    };
+    try {
+      return await withOneValidationRetry(input.signal, attempt);
     } catch (error) {
       throw new ApplicationError(
         502,
@@ -243,6 +346,12 @@ interface GroqCardRecognitionOptions {
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   reasoningEffort?: string;
+  /** `"json_schema"` asks Groq to enforce the recognition schema natively;
+   * defaults to today's `"json_object"` mode, which relies on the
+   * schema-in-prompt text plus local Zod validation (G5c). */
+  responseFormat?: "json_object" | "json_schema";
+  /** Defaults to today's hardcoded 2048 (G5d). */
+  maxCompletionTokens?: number;
 }
 
 const GroqChatResponseSchema = z
@@ -266,6 +375,8 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
   readonly #reasoningEffort: string;
+  readonly #responseFormat: "json_object" | "json_schema";
+  readonly #maxCompletionTokens: number;
 
   constructor(options: GroqCardRecognitionOptions) {
     this.model = options.model.trim();
@@ -273,10 +384,18 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? 60_000;
     this.#reasoningEffort = (options.reasoningEffort ?? "none").trim();
+    this.#responseFormat = options.responseFormat ?? "json_object";
+    this.#maxCompletionTokens = options.maxCompletionTokens ?? 2_048;
     if (!this.model) throw new Error("The Groq model must not be empty");
     if (!this.#apiKey) throw new Error("The Groq API key must not be empty");
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1_000) {
       throw new Error("The Groq timeout must be at least 1000 milliseconds");
+    }
+    if (
+      !Number.isSafeInteger(this.#maxCompletionTokens) ||
+      this.#maxCompletionTokens < 1
+    ) {
+      throw new Error("The Groq max completion tokens must be a positive integer");
     }
   }
 
@@ -285,7 +404,7 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
     categoryHint: CardLookupCategory;
     signal?: AbortSignal | undefined;
   }): Promise<CardRecognition> {
-    try {
+    const attempt = async (): Promise<CardRecognition> => {
       const response = await this.#fetch(
         "https://api.groq.com/openai/v1/chat/completions",
         {
@@ -299,11 +418,21 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
             model: this.model,
             stream: false,
             temperature: 0,
-            max_completion_tokens: 2_048,
+            max_completion_tokens: this.#maxCompletionTokens,
             ...(this.#reasoningEffort
               ? { reasoning_effort: this.#reasoningEffort }
               : {}),
-            response_format: { type: "json_object" },
+            response_format:
+              this.#responseFormat === "json_schema"
+                ? {
+                    type: "json_schema",
+                    json_schema: {
+                      name: "collectcapture_card_recognition",
+                      strict: true,
+                      schema: z.toJSONSchema(VisionRecognitionSchema),
+                    },
+                  }
+                : { type: "json_object" },
             messages: [
               {
                 role: "user",
@@ -333,16 +462,28 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
           `The recognition provider returned HTTP ${response.status}`,
         );
       }
-      const envelope = GroqChatResponseSchema.parse(JSON.parse(responseText));
-      const recognition = VisionRecognitionSchema.parse(
-        JSON.parse(envelope.choices[0]!.message.content),
-      );
+      let recognition: z.infer<typeof VisionRecognitionSchema>;
+      try {
+        const envelope = GroqChatResponseSchema.parse(
+          JSON.parse(responseText),
+        );
+        recognition = VisionRecognitionSchema.parse(
+          salvageRecognitionPayload(
+            JSON.parse(envelope.choices[0]!.message.content),
+          ),
+        );
+      } catch (error) {
+        throw new RecognitionOutputValidationError(error);
+      }
       return CardRecognitionSchema.parse({
         ...recognition,
         source: "vision",
         provider: this.providerName,
         model: this.model,
       });
+    };
+    try {
+      return await withOneValidationRetry(input.signal, attempt);
     } catch (error) {
       throw new ApplicationError(
         502,

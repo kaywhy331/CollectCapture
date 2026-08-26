@@ -61,6 +61,8 @@ describe("standalone card lookup service", () => {
       OPENAI_MODEL: "gpt-5.6",
       OLLAMA_MODEL: "qwen3.5:4b",
       GROQ_MODEL: "qwen/qwen3.6-27b",
+      GROQ_RESPONSE_FORMAT: "json_object",
+      GROQ_MAX_COMPLETION_TOKENS: 2_048,
     });
     expect(config).not.toHaveProperty("DATABASE_URL");
     expect(() =>

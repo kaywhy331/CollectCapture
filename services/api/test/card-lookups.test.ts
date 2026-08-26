@@ -186,6 +186,121 @@ describe("Ollama card recognition", () => {
     });
   });
 
+  it("salvages a trailing empty query and succeeds without retrying (G5a)", async () => {
+    let calls = 0;
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify({
+            message: {
+              content: JSON.stringify({
+                category: "pokemon",
+                name: "Charizard ex",
+                setName: "Obsidian Flames",
+                collectorNumber: "223/197",
+                language: "en",
+                visibleText: ["Charizard ex"],
+                // A strict parse would reject the empty trailing query
+                // (min 2 characters); the salvage pass drops it instead.
+                queries: ["Charizard ex 223/197", ""],
+                confidence: 0.91,
+              }),
+            },
+          }),
+        );
+      },
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).resolves.toMatchObject({
+      name: "Charizard ex",
+      queries: ["Charizard ex 223/197"],
+    });
+    expect(calls).toBe(1);
+  });
+
+  it("retries exactly once after a validation failure, then succeeds (G5b)", async () => {
+    let calls = 0;
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      fetchImpl: async () => {
+        calls += 1;
+        const content =
+          calls === 1
+            ? "not valid json"
+            : JSON.stringify({
+                category: "pokemon",
+                name: "Charizard ex",
+                setName: "Obsidian Flames",
+                collectorNumber: "223/197",
+                language: "en",
+                visibleText: ["Charizard ex"],
+                queries: ["Charizard ex 223/197"],
+                confidence: 0.91,
+              });
+        return new Response(JSON.stringify({ message: { content } }));
+      },
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).resolves.toMatchObject({ name: "Charizard ex" });
+    expect(calls).toBe(2);
+  });
+
+  it("fails after exactly one retry when every attempt is invalid (G5b)", async () => {
+    let calls = 0;
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify({ message: { content: "not valid json" } }),
+        );
+      },
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_failed",
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("never retries a timeout or network failure (G5b)", async () => {
+    let calls = 0;
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      timeoutMs: 1_000,
+      fetchImpl: async (_input, init) => {
+        calls += 1;
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal;
+          signal.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted", "AbortError")),
+          );
+        });
+      },
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_failed",
+    });
+    expect(calls).toBe(1);
+  }, 5_000);
+
   it("rejects an Ollama URL that could redirect recognition requests", () => {
     expect(
       () =>
@@ -350,6 +465,90 @@ describe("Groq card recognition", () => {
 
     await provider.recognize({ imageDataUrl, categoryHint: "magic" });
     expect(requestBody).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("defaults to json_object mode and today's 2048-token completion budget (G5c, G5d)", async () => {
+    let requestBody: Record<string, any> = {};
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "qwen/qwen3.6-27b",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    category: "magic",
+                    name: "Black Lotus",
+                    setName: null,
+                    collectorNumber: null,
+                    language: "en",
+                    visibleText: ["Black Lotus"],
+                    queries: ["Black Lotus"],
+                    confidence: 0.88,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    await provider.recognize({ imageDataUrl, categoryHint: "magic" });
+    expect(requestBody).toMatchObject({
+      max_completion_tokens: 2_048,
+      response_format: { type: "json_object" },
+    });
+  });
+
+  it("requests native JSON Schema enforcement when configured for json_schema (G5c)", async () => {
+    let requestBody: Record<string, any> = {};
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "qwen/qwen3.6-27b",
+      responseFormat: "json_schema",
+      maxCompletionTokens: 4_096,
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    category: "magic",
+                    name: "Black Lotus",
+                    setName: null,
+                    collectorNumber: null,
+                    language: "en",
+                    visibleText: ["Black Lotus"],
+                    queries: ["Black Lotus"],
+                    confidence: 0.88,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    await provider.recognize({ imageDataUrl, categoryHint: "magic" });
+    expect(requestBody).toMatchObject({
+      max_completion_tokens: 4_096,
+      response_format: {
+        type: "json_schema",
+        json_schema: expect.objectContaining({
+          name: "collectcapture_card_recognition",
+          strict: true,
+        }),
+      },
+    });
   });
 });
 
