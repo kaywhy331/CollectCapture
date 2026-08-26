@@ -1189,8 +1189,14 @@ function scoreCandidate(
  * of keeping its own copy (G3).
  */
 export function normalized(value: string): string {
+  // Fold Latin diacritics ("Pokémon" ≡ "pokemon") without disturbing other
+  // scripts: NFKD exposes combining marks, but only marks whose base
+  // character is Latin are stripped — Japanese voicing marks (ザ = サ + ゙)
+  // must survive, and NFC recomposes them afterwards.
   return value
-    .normalize("NFKC")
+    .normalize("NFKD")
+    .replace(/(?<=\p{Script=Latin})\p{M}+/gu, "")
+    .normalize("NFC")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();

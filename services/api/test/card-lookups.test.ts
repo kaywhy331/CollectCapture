@@ -878,6 +878,13 @@ describe("normalized (G8b)", () => {
   it("still folds Latin case and punctuation the way scoring depends on", () => {
     expect(normalized("Charizard-ex!")).toBe(normalized("charizard ex"));
   });
+
+  it("folds Latin diacritics without disturbing Japanese voicing marks", () => {
+    expect(normalized("Pokémon")).toBe(normalized("pokemon"));
+    expect(normalized("Juzám Djinn")).toBe(normalized("juzam djinn"));
+    expect(normalized("Lim-Dûl's Vault")).toBe(normalized("lim dul s vault"));
+    expect(normalized("リザードン")).toBe("リザードン");
+  });
 });
 
 describe("stateless card lookup", () => {
