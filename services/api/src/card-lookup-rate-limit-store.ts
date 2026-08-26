@@ -17,9 +17,10 @@
  * keeps a per-registration cache, just shared across `child()` instead of
  * split by it. That sharing is safe only because every caller in this
  * codebase keys its buckets from disjoint namespaces (the global limiter
- * uses a raw socket/`cf-connecting-ip` address; the per-user quota
- * prefixes its key with `collectfolio-card-lookups:`), so two
- * differently-configured limiters can never collide on the same key.
+ * prefixes its socket/`cf-connecting-ip`-derived keys with `ip:`; the
+ * per-user quota prefixes its key with `collectfolio-card-lookups:`), so
+ * two differently-configured limiters can never collide on the same key --
+ * even when the `cf-connecting-ip` value is caller-supplied.
  * Calling the factory fresh per app build also keeps state from leaking
  * between independently built apps (for example, separate test cases).
  */

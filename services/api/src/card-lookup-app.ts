@@ -215,10 +215,15 @@ function cloudflareTunnelRateLimitKeyGenerator(
   const forwardedHeader = request.headers["cf-connecting-ip"];
   const forwardedFor =
     typeof forwardedHeader === "string" ? forwardedHeader.trim() : "";
+  // The "ip:" prefix keeps these buckets in a namespace disjoint from the
+  // per-user quota's "collectfolio-card-lookups:" keys by construction --
+  // both limiters share one refundable backing map, and the header value
+  // is caller-supplied for a direct private-network connection, so without
+  // the prefix such a caller could address another limiter's bucket.
   if (forwardedFor && isPrivateOrLoopbackAddress(socketAddress)) {
-    return forwardedFor;
+    return `ip:${forwardedFor}`;
   }
-  return socketAddress;
+  return `ip:${socketAddress}`;
 }
 
 export async function buildCardLookupApp(
