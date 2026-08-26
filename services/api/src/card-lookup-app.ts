@@ -11,6 +11,7 @@ import { ZodError } from "zod";
 import { JwksTokenVerifier, type TokenVerifier } from "./auth.js";
 import { cardLookupHttpPlugin } from "./card-lookup-http.js";
 import type { TrustedProxyMode } from "./card-lookup-config.js";
+import { createRefundableRateLimitStore } from "./card-lookup-rate-limit-store.js";
 import {
   CATALOG_TOTAL_TIMEOUT_MS,
   GroqCardRecognitionProvider,
@@ -217,10 +218,18 @@ export async function buildCardLookupApp(
       }
     },
   });
+  // A refundable store (G7) so the per-user 30/hour quota that
+  // `cardLookupHttpPlugin` charges through `app.createRateLimit` below can
+  // give back a unit for a lookup that failed server-side. Built fresh per
+  // app so its backing map never leaks between independently built apps;
+  // see the store's own docs for why the global limiter below and the
+  // per-user quota can safely share it.
+  const cardLookupQuotaStore = createRefundableRateLimitStore();
   await app.register(rateLimit, {
     global: true,
     max: 120,
     timeWindow: "1 minute",
+    store: cardLookupQuotaStore.Store,
     ...(options.trustedProxyMode === "cloudflare-tunnel"
       ? { keyGenerator: cloudflareTunnelRateLimitKeyGenerator }
       : {}),
@@ -288,6 +297,7 @@ export async function buildCardLookupApp(
   await app.register(cardLookupHttpPlugin, {
     tokenVerifier: options.tokenVerifier,
     service: options.service,
+    refundQuota: cardLookupQuotaStore.refund,
     ...(options.maxConcurrentVisionLookups === undefined
       ? {}
       : { maxConcurrentVisionLookups: options.maxConcurrentVisionLookups }),

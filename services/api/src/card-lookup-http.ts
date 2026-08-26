@@ -5,6 +5,7 @@ import {
   ClientDisconnectedError,
   type CardLookupHandler,
 } from "./card-lookups.js";
+import { ApplicationError } from "./errors.js";
 
 export interface CardLookupHttpOptions {
   tokenVerifier: TokenVerifier;
@@ -15,6 +16,35 @@ export interface CardLookupHttpOptions {
    * `CARD_LOOKUP_MAX_CONCURRENCY`'s default.
    */
   maxConcurrentVisionLookups?: number;
+  /**
+   * Gives back one charged hourly-quota unit for a key produced by this
+   * plugin's own rate-limit `keyGenerator` (G7). Omitted by a caller whose
+   * rate-limit plugin registration does not use a refundable store (today,
+   * the main LocalClear app's `/v1/card-lookups` mount) -- refunding is
+   * then simply skipped, matching that caller's pre-G7 behavior exactly.
+   */
+  refundQuota?: (key: string) => void;
+}
+
+/** Prefixes every per-user quota key so it can never collide with the
+ * global limiter's own (raw IP/`cf-connecting-ip`) keys in a shared
+ * refundable store (see card-lookup-rate-limit-store.ts). */
+function cardLookupQuotaKey(userId: string): string {
+  return `collectfolio-card-lookups:${userId}`;
+}
+
+/**
+ * Whether a lookup failure should give back its already-charged quota unit
+ * (G7a): any outcome that resolves to a 5xx response, plus a client
+ * disconnect (nobody received a response at all, so nothing was actually
+ * delivered for the charge). A client-caused failure (a 4xx
+ * `ApplicationError`, such as a rejected image) is never refunded -- the
+ * lookup did run and did tell the caller something concrete.
+ */
+function isRefundableLookupFailure(error: unknown): boolean {
+  if (error instanceof ClientDisconnectedError) return true;
+  if (error instanceof ApplicationError) return error.statusCode >= 500;
+  return true;
 }
 
 /**
@@ -49,9 +79,9 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
   const checkRateLimit = app.createRateLimit({
     max: 30,
     timeWindow: "1 hour",
-    keyGenerator: (request) =>
-      `collectfolio-card-lookups:${request.principal.userId}`,
+    keyGenerator: (request) => cardLookupQuotaKey(request.principal.userId),
   });
+  const refundQuota = options.refundQuota ?? (() => {});
   const visionSlots = new VisionConcurrencyGate(
     options.maxConcurrentVisionLookups ?? 2,
   );
@@ -97,10 +127,15 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
         return;
       }
 
+      const quotaKey = cardLookupQuotaKey(request.principal.userId);
       try {
         // Charge the quota only once a lookup is actually going to run, so
         // a busy rejection above never consumes it.
         const limit = await checkRateLimit(request);
+        // `limit.isAllowed` is only ever `true` for an allow-listed caller
+        // (this route configures no allow list), so this branch runs on
+        // every request and reliably stamps the standard rate-limit
+        // headers on a SUCCESSFUL response too, not just a throttled one.
         if (!limit.isAllowed) {
           reply
             .header("x-ratelimit-limit", limit.max)
@@ -127,6 +162,12 @@ export const cardLookupHttpPlugin: FastifyPluginAsync<
           .header("pragma", "no-cache")
           .send({ lookup });
       } catch (error) {
+        // A lookup that was charged but never actually delivered anything
+        // to the caller -- a server-side (5xx) failure, or the client
+        // disconnecting before a response could be sent -- gives back its
+        // quota unit. A client-caused failure (a rejected image, for
+        // example) keeps the charge: the lookup did run.
+        if (isRefundableLookupFailure(error)) refundQuota(quotaKey);
         if (error instanceof ClientDisconnectedError) {
           // The client is gone: this is its own outcome, not a provider or
           // catalog failure, and there is nobody left to send a body to.

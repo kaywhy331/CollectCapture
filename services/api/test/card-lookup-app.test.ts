@@ -7,6 +7,7 @@ import {
 } from "../src/card-lookup-app.js";
 import { readCardLookupConfig } from "../src/card-lookup-config.js";
 import { StaticTokenVerifier } from "../src/auth.js";
+import { ApplicationError } from "../src/errors.js";
 
 function createDeferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -540,6 +541,174 @@ describe("vision concurrency gate", () => {
     expect(Number(secondCall.headers["x-ratelimit-remaining"])).toBe(
       firstRemaining - 1,
     );
+  });
+});
+
+describe("hourly quota refund and headers (G7)", () => {
+  const apps: Awaited<ReturnType<typeof buildCardLookupApp>>[] = [];
+  const authHeaders = {
+    authorization: "Bearer folio-token",
+    origin: "https://folio.example.test",
+  };
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  async function appWithService(service: {
+    lookup: (...args: never[]) => Promise<unknown>;
+  }) {
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      tokenVerifier: new StaticTokenVerifier(
+        new Map([
+          ["folio-token", { userId: "folio-user", email: null, roles: [] }],
+        ]),
+      ),
+      service: service as never,
+    });
+    apps.push(app);
+    return app;
+  }
+
+  it("shows the standard rate-limit headers, decremented, on a plain success", async () => {
+    const app = await appWithService({ lookup: async () => lookup });
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.headers["x-ratelimit-limit"]).toBe("30");
+    expect(first.headers["x-ratelimit-remaining"]).toBe("29");
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.headers["x-ratelimit-remaining"]).toBe("28");
+  });
+
+  it("refunds the quota unit for a generic (unclassified) 500 failure", async () => {
+    let calls = 0;
+    const app = await appWithService({
+      async lookup() {
+        calls += 1;
+        if (calls === 1) throw new Error("provider exploded");
+        return lookup;
+      },
+    });
+
+    const failed = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(failed.statusCode).toBe(500);
+
+    const succeeded = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(succeeded.statusCode).toBe(200);
+    // Only one lookup was ever actually charged (the 500 was refunded).
+    expect(succeeded.headers["x-ratelimit-remaining"]).toBe("29");
+  });
+
+  it("does not consume the quota that a 502 recognition failure refunds", async () => {
+    let calls = 0;
+    const app = await appWithService({
+      async lookup() {
+        calls += 1;
+        if (calls === 1) {
+          throw new ApplicationError(
+            502,
+            "card_recognition_unavailable",
+            "The card recognition provider is temporarily unavailable. Please try again shortly.",
+          );
+        }
+        return lookup;
+      },
+    });
+
+    const failed = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(failed.statusCode).toBe(502);
+
+    const succeeded = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(succeeded.statusCode).toBe(200);
+    // Only one lookup was ever actually charged (the 502 was refunded).
+    expect(succeeded.headers["x-ratelimit-remaining"]).toBe("29");
+  });
+
+  it("never refunds a client-caused (4xx) failure", async () => {
+    const app = await appWithService({
+      async lookup() {
+        throw new ApplicationError(
+          422,
+          "media_type_mismatch",
+          "Uploaded media bytes do not match the declared media type",
+        );
+      },
+    });
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(rejected.statusCode).toBe(422);
+
+    const next = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(next.statusCode).toBe(422);
+    // The first (charged, never refunded) attempt already spent a unit,
+    // so the second attempt's headers show two units spent, not one.
+    expect(next.headers["x-ratelimit-remaining"]).toBe("28");
+  });
+
+  it("still 429s the 31st successful lookup within the hour after refunds", async () => {
+    const app = await appWithService({ lookup: async () => lookup });
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/card-lookups",
+        headers: authHeaders,
+        payload: { imageDataUrl },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const limited = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(limited.statusCode).toBe(429);
   });
 });
 
