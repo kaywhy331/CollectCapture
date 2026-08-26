@@ -186,14 +186,11 @@ export function createAuthenticationHook(verifier: TokenVerifier) {
       );
     } catch (error) {
       if (isAuthenticationInfrastructureFailure(error)) {
-        await reply
-          .code(503)
-          .header("retry-after", "30")
-          .send({
-            error: "authentication_unavailable",
-            message:
-              "CollectCapture could not reach the sign-in service. Please try again shortly.",
-          });
+        await reply.code(503).header("retry-after", "30").send({
+          error: "authentication_unavailable",
+          message:
+            "CollectCapture could not reach the sign-in service. Please try again shortly.",
+        });
         return;
       }
       await reply.code(401).send({
