@@ -1017,7 +1017,20 @@ function normalizeTcgcsvCandidate(
   const prices = Array.isArray(product.prices)
     ? product.prices.filter(isRecord)
     : [];
-  const variant = stringValue(prices[0]?.subtypeName);
+  // `prices[0]` was ordering luck, not evidence: TCGCSV lists one price row
+  // per printing (Normal, Holofoil, ...) with no documented canonical
+  // order, so the first row was really an arbitrary one. Only report a
+  // variant when every price row agrees on it; multiple distinct
+  // subtypeNames mean multiple printings share this product listing, and
+  // the collector -- not this heuristic -- picks the actual printing in
+  // the client (G17).
+  const distinctSubtypeNames = new Set(
+    prices
+      .map((price) => stringValue(price.subtypeName))
+      .filter((subtypeName) => subtypeName.length > 0),
+  );
+  const variant =
+    distinctSubtypeNames.size === 1 ? [...distinctSubtypeNames][0]! : "";
   const publishedOn =
     stringValue(product.groupPublishedOn) ||
     stringValue(product.publishedOn) ||

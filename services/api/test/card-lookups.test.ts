@@ -1444,6 +1444,79 @@ describe("TCGCSV catalog lookup", () => {
 
     expect(categoryIdsInRequestOrder).toEqual(["3", "85"]);
   });
+
+  it("keeps the variant when every price row agrees on it (G17)", async () => {
+    const provider = new TcgcsvCardCatalogProvider({
+      baseUrl: "https://catalog.example.test",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            products: [
+              {
+                categoryId: 3,
+                categoryName: "Pokemon",
+                groupId: 123,
+                groupName: "Obsidian Flames",
+                productId: 456,
+                name: "Charizard ex",
+                prices: [
+                  { subtypeName: "Holofoil", marketPrice: 99 },
+                  { subtypeName: "Holofoil", marketPrice: 105 },
+                ],
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+
+    const result = await provider.search({
+      recognition,
+      category: "pokemon",
+      limit: 12,
+      authorization: "Bearer folio-token",
+    });
+
+    expect(result.candidates[0]?.variant).toBe("Holofoil");
+  });
+
+  it("omits the variant when price rows disagree, instead of guessing the first row (G17)", async () => {
+    const provider = new TcgcsvCardCatalogProvider({
+      baseUrl: "https://catalog.example.test",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            products: [
+              {
+                categoryId: 3,
+                categoryName: "Pokemon",
+                groupId: 123,
+                groupName: "Obsidian Flames",
+                productId: 456,
+                name: "Charizard ex",
+                // Ordering must not matter: a naive `prices[0]` reading
+                // would have reported "Normal" here.
+                prices: [
+                  { subtypeName: "Normal", marketPrice: 20 },
+                  { subtypeName: "Holofoil", marketPrice: 99 },
+                  { subtypeName: "Reverse Holofoil", marketPrice: 60 },
+                ],
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+
+    const result = await provider.search({
+      recognition,
+      category: "pokemon",
+      limit: 12,
+      authorization: "Bearer folio-token",
+    });
+
+    expect(result.candidates[0]?.variant).toBe("");
+  });
 });
 
 describe("card lookup route", () => {
