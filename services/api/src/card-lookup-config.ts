@@ -47,6 +47,7 @@ const CardLookupEnvironmentSchema = z
     COLLECTFOLIO_SUPABASE_JWKS_URL: OptionalUrlSchema,
     COLLECTFOLIO_CATALOG_URL: z.string().url(),
     TRUSTED_PROXY_MODE: z.enum(["none", "cloudflare-tunnel"]).default("none"),
+    CARD_LOOKUP_MAX_CONCURRENCY: z.coerce.number().int().min(1).default(2),
   })
   .strip()
   .superRefine((value, context) => {

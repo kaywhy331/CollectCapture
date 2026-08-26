@@ -46,6 +46,7 @@ const app = await buildCardLookupApp({
   ...runtime,
   allowedOrigin: new URL(config.COLLECTFOLIO_APP_URL).origin,
   trustedProxyMode: config.TRUSTED_PROXY_MODE,
+  maxConcurrentVisionLookups: config.CARD_LOOKUP_MAX_CONCURRENCY,
   logger: {
     level: config.LOG_LEVEL,
     redact: {

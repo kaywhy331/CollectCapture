@@ -25,7 +25,10 @@ COLLECTFOLIO_CATALOG_URL=https://<collectfolio-private-catalog-origin>
 HOST=0.0.0.0                                # container default
 PORT=4100                                   # platform PORT is also accepted
 LOG_LEVEL=info
+CARD_LOOKUP_MAX_CONCURRENCY=2               # concurrent vision-recognition calls admitted; excess requests get a fast 503
 ```
+
+`CARD_LOOKUP_MAX_CONCURRENCY` only gates the vision-recognition phase; a manual-query lookup (collector-edited search text, no image recognition) is never gated and always runs. A rejected request responds `503 card_lookup_busy` with `Retry-After: 5` and does not consume the caller's 30-lookups/hour quota. Set it to `1` for a single local Ollama instance, which can only run one vision request at a time regardless of how many arrive concurrently; the local Ollama overlays do this and also set `OLLAMA_NUM_PARALLEL=1` to match.
 
 No `DATABASE_URL`, CollectCapture Supabase credential, service-role key, storage bucket, device key, public LocalClear URL, or telemetry collector is required. Startup fails if a shared value or the selected provider's secret is missing, an internet-facing integration URL is not HTTPS, or the browser URL is not an exact origin. Blank keys for providers that are not selected are accepted.
 

@@ -4,6 +4,14 @@ import { buildCardLookupApp } from "../src/card-lookup-app.js";
 import { readCardLookupConfig } from "../src/card-lookup-config.js";
 import { StaticTokenVerifier } from "../src/auth.js";
 
+function createDeferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 const imageDataUrl =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
@@ -304,5 +312,184 @@ describe("tunnel-mode rate limiting", () => {
       cfConnectingIp: "203.0.113.20",
     });
     expect(second).toBe(first - 1);
+  });
+});
+
+describe("vision concurrency gate", () => {
+  const apps: Awaited<ReturnType<typeof buildCardLookupApp>>[] = [];
+  const authHeaders = {
+    authorization: "Bearer folio-token",
+    origin: "https://folio.example.test",
+  };
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  async function appWithService(
+    service: { lookup: (...args: never[]) => Promise<unknown> },
+    maxConcurrentVisionLookups = 1,
+  ) {
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      maxConcurrentVisionLookups,
+      tokenVerifier: new StaticTokenVerifier(
+        new Map([
+          ["folio-token", { userId: "folio-user", email: null, roles: [] }],
+        ]),
+      ),
+      service: service as never,
+    });
+    apps.push(app);
+    return app;
+  }
+
+  it("returns an immediate 503 for a concurrent vision lookup beyond capacity", async () => {
+    const firstStarted = createDeferred<void>();
+    const releaseFirst = createDeferred<void>();
+    const app = await appWithService({
+      async lookup() {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+        return lookup;
+      },
+    });
+
+    const first = app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    await firstStarted.promise;
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(second.statusCode).toBe(503);
+    expect(second.headers["retry-after"]).toBe("5");
+    expect(second.json()).toMatchObject({ error: "card_lookup_busy" });
+
+    releaseFirst.resolve();
+    expect((await first).statusCode).toBe(200);
+  });
+
+  it("never gates a manual-query lookup", async () => {
+    const firstStarted = createDeferred<void>();
+    const releaseFirst = createDeferred<void>();
+    let callCount = 0;
+    const app = await appWithService({
+      async lookup() {
+        callCount += 1;
+        // Only the first (vision) call holds the only slot open; a manual
+        // lookup arriving while it is held must not also block on it.
+        if (callCount === 1) {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        }
+        return lookup;
+      },
+    });
+
+    const first = app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    await firstStarted.promise;
+
+    const manual = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl, query: "Charizard 4/102" },
+    });
+    expect(manual.statusCode).toBe(200);
+
+    releaseFirst.resolve();
+    expect((await first).statusCode).toBe(200);
+  });
+
+  it("releases the slot after a provider error so a follow-up request succeeds", async () => {
+    let callCount = 0;
+    const app = await appWithService({
+      async lookup() {
+        callCount += 1;
+        if (callCount === 1) throw new Error("provider exploded");
+        return lookup;
+      },
+    });
+
+    const failed = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(failed.statusCode).toBe(500);
+
+    const succeeded = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(succeeded.statusCode).toBe(200);
+  });
+
+  it("does not consume the hourly quota for a busy rejection", async () => {
+    const firstStarted = createDeferred<void>();
+    const releaseFirst = createDeferred<void>();
+    const app = await appWithService({
+      async lookup() {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+        return lookup;
+      },
+    });
+
+    const first = app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    await firstStarted.promise;
+
+    const busy = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(busy.statusCode).toBe(503);
+    // (The global 120/min limiter still stamps its own x-ratelimit-*
+    // headers on every response, busy or not; only the per-user 30/hour
+    // quota below -- charged by the route handler itself -- is what must
+    // stay untouched by a busy rejection.)
+
+    releaseFirst.resolve();
+    const firstResponse = await first;
+    expect(firstResponse.statusCode).toBe(200);
+    const firstRemaining = Number(
+      firstResponse.headers["x-ratelimit-remaining"],
+    );
+
+    const secondCall = await app.inject({
+      method: "POST",
+      url: "/v1/card-lookups",
+      headers: authHeaders,
+      payload: { imageDataUrl },
+    });
+    expect(secondCall.statusCode).toBe(200);
+    // Only two lookups were ever actually charged (the busy one was not),
+    // so the quota drops by exactly one more unit.
+    expect(Number(secondCall.headers["x-ratelimit-remaining"])).toBe(
+      firstRemaining - 1,
+    );
   });
 });

@@ -110,6 +110,8 @@ export interface BuildCardLookupAppOptions extends CardLookupRuntime {
    * buckets. Defaults to `"none"`, which is byte-for-byte today's behavior.
    */
   trustedProxyMode?: TrustedProxyMode;
+  /** Caps concurrent vision-recognition calls. Defaults to 2. */
+  maxConcurrentVisionLookups?: number;
 }
 
 /**
@@ -239,6 +241,9 @@ export async function buildCardLookupApp(
   await app.register(cardLookupHttpPlugin, {
     tokenVerifier: options.tokenVerifier,
     service: options.service,
+    ...(options.maxConcurrentVisionLookups === undefined
+      ? {}
+      : { maxConcurrentVisionLookups: options.maxConcurrentVisionLookups }),
   });
   app.setNotFoundHandler(async (_request, reply) => {
     await reply
