@@ -220,6 +220,46 @@ describe("standalone card lookup service", () => {
   });
 });
 
+describe("global rate limiter exhaustion (G26)", () => {
+  const apps: Awaited<ReturnType<typeof buildCardLookupApp>>[] = [];
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  it("returns 429 rate_limited (not a 500) once the global 120/min limiter is exhausted", async () => {
+    const app = await buildCardLookupApp({
+      allowedOrigin: "https://folio.example.test",
+      tokenVerifier: new StaticTokenVerifier(new Map()),
+      service: {
+        async lookup(): Promise<never> {
+          throw new Error("not called");
+        },
+      },
+    });
+    apps.push(app);
+
+    // The global limiter is keyed by socket address; light-my-request's
+    // injected requests all share the same default remote address, so 120
+    // health checks exhaust the same bucket the 121st request hits.
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const response = await app.inject({ method: "GET", url: "/health" });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const exhausted = await app.inject({ method: "GET", url: "/health" });
+    expect(exhausted.statusCode).toBe(429);
+    expect(exhausted.json()).toMatchObject({
+      error: "rate_limited",
+      message: "Too many requests. Please try again shortly.",
+    });
+    expect(exhausted.headers["retry-after"]).toBeDefined();
+    expect(exhausted.headers["x-ratelimit-limit"]).toBe("120");
+    expect(exhausted.headers["x-ratelimit-remaining"]).toBe("0");
+    expect(exhausted.headers["x-ratelimit-reset"]).toBeDefined();
+  });
+});
+
 describe("tunnel-mode rate limiting", () => {
   const apps: Awaited<ReturnType<typeof buildCardLookupApp>>[] = [];
   // The address the cloudflared sidecar itself connects from over the

@@ -216,10 +216,18 @@ export async function buildCardLookupApp(
     ...(options.trustedProxyMode === "cloudflare-tunnel"
       ? { keyGenerator: cloudflareTunnelRateLimitKeyGenerator }
       : {}),
-    errorResponseBuilder: () => ({
-      error: "rate_limited",
-      message: "Too many requests. Please try again shortly.",
-    }),
+    // Must return an `ApplicationError` (not a plain object) so the shared
+    // error handler below recognizes it and replies `429`/`rate_limited`
+    // instead of falling through to its generic `500 internal_error`
+    // branch, which has no `statusCode` to key off of (G26). The library
+    // itself already stamped the standard `x-ratelimit-*`/`retry-after`
+    // headers onto `reply` before calling this builder.
+    errorResponseBuilder: (_request, context) =>
+      new ApplicationError(
+        context.statusCode,
+        "rate_limited",
+        "Too many requests. Please try again shortly.",
+      ),
   });
 
   app.setErrorHandler(async (error, request, reply) => {
