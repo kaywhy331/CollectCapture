@@ -28,6 +28,7 @@ const sharedRuntimeOptions = {
     : {}),
   collectFolioCatalogUrl: config.COLLECTFOLIO_CATALOG_URL,
   probeJwksAtStartup: true,
+  minCardImageDimension: config.CARD_IMAGE_MIN_DIMENSION,
 };
 const runtime =
   config.CARD_RECOGNITION_PROVIDER === "ollama"

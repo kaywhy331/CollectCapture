@@ -31,9 +31,12 @@ CARD_LOOKUP_MAX_CONCURRENCY=2               # concurrent vision-recognition call
 OTEL_EXPORTER_OTLP_ENDPOINT=                # optional; unset means no telemetry at all (today's behavior)
 OTEL_SERVICE_NAME=collectcapture-card-lookups
 OTEL_EXPORT_INTERVAL_MS=60000
+CARD_IMAGE_MIN_DIMENSION=0                  # shortest-side pixel minimum; 0 disables the gate (default, unchanged behavior)
 ```
 
 `CARD_LOOKUP_MAX_CONCURRENCY` only gates the vision-recognition phase; a manual-query lookup (collector-edited search text, no image recognition) is never gated and always runs. A rejected request responds `503 card_lookup_busy` with `Retry-After: 5` and does not consume the caller's 30-lookups/hour quota. Set it to `1` for a single local Ollama instance, which can only run one vision request at a time regardless of how many arrive concurrently; the local Ollama overlays do this and also set `OLLAMA_NUM_PARALLEL=1` to match.
+
+`CARD_IMAGE_MIN_DIMENSION` rejects an image whose shortest side, parsed from its PNG/JPEG/WebP container header (never by decoding pixels), falls below the configured pixel count, responding `422 media_resolution_too_low`. `0` (the default) disables the gate entirely -- dimensions are not even parsed, so existing 1x1 fixtures and any deployment that has not opted in keep passing unchanged. A 200 px minimum is proposed but not yet a recommended default; see [the CollectFolio contract doc](collectfolio-card-lookup.md) for why.
 
 No `DATABASE_URL`, CollectCapture Supabase credential, service-role key, storage bucket, device key, public LocalClear URL, or telemetry collector is required. Startup fails if a shared value or the selected provider's secret is missing, an internet-facing integration URL is not HTTPS, or the browser URL is not an exact origin. Blank keys for providers that are not selected are accepted.
 
@@ -131,7 +134,7 @@ Before directing CollectFolio traffic to a release:
 2. Confirm the exact configured CollectFolio origin receives the CORS allow-origin header and a different origin does not.
 3. Exercise a valid token, an expired token, and a token from a different issuer.
 4. Exercise both an image-driven lookup and a manual-query lookup; confirm the configured provider/model provenance is returned and the manual query does not invoke vision recognition.
-5. Confirm malformed, mismatched, GPS-bearing, and oversized images are rejected.
+5. Confirm malformed, mismatched, GPS-bearing, and oversized images are rejected; if `CARD_IMAGE_MIN_DIMENSION` is set, confirm an undersized image is rejected too.
 6. Confirm provider and catalog timeouts fail without echoing a bearer token or image data in application or edge logs.
 7. Confirm lookup responses are not cached and no crop or result appears in a database, object store, filesystem volume, or log sink.
 8. Confirm the 31st request from one principal within an hour receives HTTP 429 while another principal remains independent.

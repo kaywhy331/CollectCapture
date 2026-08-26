@@ -1012,6 +1012,45 @@ describe("stateless card lookup", () => {
       ),
     ).rejects.toMatchObject({ statusCode: 422, code: "media_type_mismatch" });
   });
+
+  it("rejects an undersized image only when minCardImageDimension is configured (G22)", async () => {
+    const buildService = (minCardImageDimension?: number) =>
+      new StatelessCardLookupService(
+        {
+          providerName: "test-vision",
+          model: "deterministic-v1",
+          async recognize() {
+            return recognition;
+          },
+        },
+        {
+          async search() {
+            return { candidates: [], warnings: [] };
+          },
+        },
+        minCardImageDimension === undefined
+          ? undefined
+          : { minCardImageDimension },
+      );
+
+    // pngBase64 is a 1x1 fixture; the default (no option) keeps passing.
+    await expect(
+      buildService().lookup(
+        { imageDataUrl, query: "", category: "all", limit: 12 },
+        { authorization: "Bearer folio-token" },
+      ),
+    ).resolves.toMatchObject({ imageRetained: false });
+
+    await expect(
+      buildService(200).lookup(
+        { imageDataUrl, query: "", category: "all", limit: 12 },
+        { authorization: "Bearer folio-token" },
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      code: "media_resolution_too_low",
+    });
+  });
 });
 
 describe("client disconnect cancellation", () => {

@@ -820,10 +820,15 @@ export interface CardLookupHandler {
 }
 
 export class StatelessCardLookupService implements CardLookupHandler {
+  readonly #minCardImageDimension: number;
+
   constructor(
     readonly recognitionProvider: CardRecognitionProvider,
     readonly catalogProvider: CardCatalogProvider,
-  ) {}
+    options: { minCardImageDimension?: number } = {},
+  ) {
+    this.#minCardImageDimension = options.minCardImageDimension ?? 0;
+  }
 
   get recognitionProviderName(): string {
     return this.recognitionProvider.providerName;
@@ -842,7 +847,10 @@ export class StatelessCardLookupService implements CardLookupHandler {
     },
   ): Promise<CardLookupResult> {
     if (context.signal?.aborted) throw new ClientDisconnectedError();
-    const image = verifiedCardImage(request.imageDataUrl);
+    const image = verifiedCardImage(
+      request.imageDataUrl,
+      this.#minCardImageDimension,
+    );
     let recognition: CardRecognition;
     if (request.query) {
       recognition = manualRecognition(request.query, request.category);
@@ -923,7 +931,7 @@ function disconnectedOr(error: unknown, signal: AbortSignal | undefined) {
   return signal?.aborted ? new ClientDisconnectedError() : error;
 }
 
-function verifiedCardImage(dataUrl: string) {
+function verifiedCardImage(dataUrl: string, minDimension = 0) {
   const match =
     /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(
       dataUrl,
@@ -960,6 +968,7 @@ function verifiedCardImage(dataUrl: string) {
       bytes,
       { declaredMediaType: mediaType, expectedSha256 },
       MAX_CARD_IMAGE_BYTES,
+      minDimension,
     );
   } catch (error) {
     if (error instanceof MediaVerificationError) {

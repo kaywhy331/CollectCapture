@@ -28,6 +28,7 @@ const MEDIA_REJECTION_CODES = new Set([
   "media_metadata_invalid",
   "media_location_present",
   "media_too_large",
+  "media_resolution_too_low",
 ]);
 
 export interface CardLookupHttpOptions {

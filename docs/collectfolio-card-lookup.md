@@ -44,6 +44,8 @@ The endpoint requires `Authorization: Bearer <CollectFolio Supabase JWT>`, accep
 
 The decoded JPEG, PNG, or WebP must be at most 2 MiB and its declared type must match its bytes. The service computes the content SHA-256 before recognition. When `query` is empty, the configured OpenAI, Ollama, or Groq model produces conservative structured visible-text evidence; when it is present, provider recognition is skipped and the query becomes the evidence. Each bounded query is sent to the private CollectFolio `catalog/search` endpoint with the same bearer token.
 
+An optional minimum-resolution gate can reject an image whose shortest side (parsed from its PNG/JPEG/WebP container header, never by decoding pixels) falls below a configured pixel minimum, responding `422 media_resolution_too_low` with a message asking the collector to retake the photo larger or closer to the card. It is **disabled by default** (`CARD_IMAGE_MIN_DIMENSION=0`); see [the deployment runbook](deploy-card-lookups.md) for the env var. A 200 px minimum is proposed but **not yet enabled** -- turning it on is pending CollectFolio-lane acknowledgment and a matching client-side pre-check (rejecting an obviously-too-small capture before upload, rather than relying solely on this server-side backstop).
+
 The response is cache-disabled and has this shape:
 
 ```json

@@ -72,6 +72,10 @@ const CardLookupEnvironmentSchema = z
     COLLECTFOLIO_CATALOG_URL: z.string().url(),
     TRUSTED_PROXY_MODE: z.enum(["none", "cloudflare-tunnel"]).default("none"),
     CARD_LOOKUP_MAX_CONCURRENCY: z.coerce.number().int().min(1).default(2),
+    // 0 (the default) disables the gate entirely -- dimensions are not
+    // even parsed -- so existing 1x1 test fixtures keep passing untouched
+    // in default config (G22).
+    CARD_IMAGE_MIN_DIMENSION: z.coerce.number().int().min(0).default(0),
   })
   .strip()
   .superRefine((value, context) => {

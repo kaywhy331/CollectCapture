@@ -41,6 +41,13 @@ interface CardLookupRuntimeBaseOptions {
    * the standalone entrypoint opts in.
    */
   probeJwksAtStartup?: boolean;
+  /**
+   * Shortest-side pixel minimum a card image must meet (G22). `0` (the
+   * default) disables the gate entirely -- dimensions are not even
+   * parsed -- so default-config behavior, including existing 1x1 test
+   * fixtures, is unchanged.
+   */
+  minCardImageDimension?: number;
 }
 
 export type CardLookupRuntimeOptions = CardLookupRuntimeBaseOptions &
@@ -153,6 +160,7 @@ export function createCardLookupRuntime(
       new TcgcsvCardCatalogProvider({
         baseUrl: options.collectFolioCatalogUrl,
       }),
+      { minCardImageDimension: options.minCardImageDimension ?? 0 },
     ),
   };
 }

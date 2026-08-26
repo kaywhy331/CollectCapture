@@ -64,6 +64,7 @@ describe("standalone card lookup service", () => {
       GROQ_MODEL: "qwen/qwen3.6-27b",
       GROQ_RESPONSE_FORMAT: "json_object",
       GROQ_MAX_COMPLETION_TOKENS: 2_048,
+      CARD_IMAGE_MIN_DIMENSION: 0,
     });
     expect(config).not.toHaveProperty("DATABASE_URL");
     expect(() =>
