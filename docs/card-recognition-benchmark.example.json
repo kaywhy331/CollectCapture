@@ -12,6 +12,12 @@
         "collectorNumber": "223/197",
         "language": "en",
         "visibleText": ["Charizard ex", "223/197"]
+      },
+      "expectedCatalog": {
+        "name": "Charizard ex",
+        "setName": "Obsidian Flames",
+        "collectorNumber": "223/197",
+        "topN": 5
       }
     },
     {

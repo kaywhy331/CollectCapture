@@ -103,14 +103,28 @@ Vision support and valid JSON are necessary but do not prove card-recognition ac
   -QualificationDirectory C:\private\collectcapture-benchmark
 ```
 
-The benchmark runs inside the API image, sequentially calls the configured recognition provider, and reports per-field failures, average latency, p95 latency, and the manifest's minimum pass rate. It does not call the catalog or retain an image. Repeat with `OllamaCloud` and `OllamaLocal`; use identical inputs and expectations.
+The benchmark runs inside the API image, sequentially calls the configured recognition provider, and reports per-case, per-category (by game), and per-language pass/fail plus average latency, p95 latency, and the manifest's minimum pass rate -- enforced both overall AND per game category, so one weak category cannot hide behind a majority category's good results. The first case's latency is excluded from the average/p95 as warm-up (model load, connection setup). By default it does not call the catalog or retain an image. Repeat with `OllamaCloud` and `OllamaLocal`; use identical inputs and expectations.
 
 Use at least 30–50 crops spanning the games, languages, layouts, foil glare, sleeves, camera quality, rotations, and partial/obscured fields CollectFolio will encounter. Include expected `null` fields to measure hallucinated set or collector-number claims. A reasonable initial gate is:
 
-- at least 90% exact normalized field checks;
+- at least 90% exact normalized field checks, overall and per game category;
 - no systematic false set or collector-number claims on obscured cards;
 - p95 recognition latency below roughly 25 seconds, leaving room for the current 30-second browser deadline;
 - an end-to-end CollectFolio check that the correct catalog candidate is offered and still requires collector confirmation.
+
+### Catalog-aware qualification
+
+Recognition accuracy alone does not prove the search path actually surfaces the right catalog printing. Add an `expectedCatalog` block (`productId` and/or `name`, plus optional `setName`/`collectorNumber` and `topN`, default 5) to a manifest case -- see [the example manifest](card-recognition-benchmark.example.json) -- and run the harness with `--catalog` to additionally search the real catalog for that case and require the expected product to appear in the top `topN` results:
+
+```powershell
+docker compose -f compose.card-lookups.yml run --rm --no-deps `
+  --volume C:\private\collectcapture-benchmark:/qualification:ro `
+  --env CARD_LOOKUP_QUALIFICATION_TOKEN=<a-valid-collectfolio-bearer-token> `
+  card-lookups `
+  node dist/card-recognition-qualification.js /qualification/manifest.json --catalog
+```
+
+`--catalog` requires `COLLECTFOLIO_CATALOG_URL` (already configured for the stack) and a bearer token for a real CollectFolio session, supplied via `CARD_LOOKUP_QUALIFICATION_TOKEN` or `--token <value>`; missing either fails immediately with a clear error before any case runs. A case without `expectedCatalog` still runs its ordinary recognition-only check even with `--catalog` set. The `-Action Qualify` launcher shortcut above does not yet forward `--catalog`/`--token`; use the direct `docker compose run` form shown here until it does.
 
 The code and mocked tests confirm that all three provider protocols can satisfy CollectCapture's recognition contract. Only a RED PC benchmark with representative crops can establish semantic accuracy and usable latency.
 
