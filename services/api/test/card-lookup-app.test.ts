@@ -189,5 +189,18 @@ describe("standalone card lookup service", () => {
       expect.objectContaining({ query: "Charizard 4/102" }),
       { authorization: "Bearer folio-token" },
     );
+
+    const preflight = await fetch(`${address}/v1/card-lookups`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://folio.example.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization,content-type",
+      },
+    });
+    expect(preflight.headers.get("access-control-allow-origin")).toBe(
+      "https://folio.example.test",
+    );
+    expect(preflight.headers.get("access-control-max-age")).toBe("86400");
   });
 });

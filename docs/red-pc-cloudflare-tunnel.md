@@ -124,7 +124,7 @@ Invoke-WebRequest `
   -Headers $headers
 ```
 
-The response must allow the exact `Origin` value. Do not use `*` for authenticated browser requests.
+The response must allow the exact `Origin` value. Do not use `*` for authenticated browser requests. It also carries `Access-Control-Max-Age: 86400`, so a browser caches the preflight for 24 hours instead of repeating it before every scan.
 
 ## Security boundary
 

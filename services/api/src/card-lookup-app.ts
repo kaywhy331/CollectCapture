@@ -111,6 +111,7 @@ export async function buildCardLookupApp(
   await app.register(helmet, { global: true });
   await app.register(cors, {
     credentials: true,
+    maxAge: 86_400,
     origin(origin, callback) {
       if (!origin || origin === options.allowedOrigin) {
         callback(null, true);
