@@ -12,6 +12,7 @@ import {
   OpenAICardRecognitionProvider,
   StatelessCardLookupService,
   TcgcsvCardCatalogProvider,
+  normalizedNumber,
   type CardCatalogProvider,
   type CardLookupHandler,
   type CardRecognitionProvider,
@@ -346,6 +347,18 @@ describe("Groq card recognition", () => {
 
     await provider.recognize({ imageDataUrl, categoryHint: "magic" });
     expect(requestBody).not.toHaveProperty("reasoning_effort");
+  });
+});
+
+describe("normalizedNumber", () => {
+  it("strips a leading zero from every digit run, not just the string start", () => {
+    expect(normalizedNumber("SV004")).toBe(normalizedNumber("SV4"));
+    expect(normalizedNumber("004/198")).toBe(normalizedNumber("4/198"));
+    expect(normalizedNumber("4/098")).toBe(normalizedNumber("4/98"));
+  });
+
+  it("does not treat a value ending in zero as equal to that value without it", () => {
+    expect(normalizedNumber("10")).not.toBe(normalizedNumber("1"));
   });
 });
 

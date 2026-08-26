@@ -737,11 +737,11 @@ function normalized(value: string): string {
     .trim();
 }
 
-function normalizedNumber(value: string): string {
+export function normalizedNumber(value: string): string {
   return value
     .toLowerCase()
     .replace(/\s+/g, "")
-    .replace(/^0+(?=\d)/, "");
+    .replace(/\d+/g, (run) => run.replace(/^0+(?=\d)/, ""));
 }
 
 function categoryName(categoryId: number, fallback: string): string {
