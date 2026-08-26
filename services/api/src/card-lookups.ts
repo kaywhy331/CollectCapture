@@ -513,10 +513,9 @@ export class StatelessCardLookupService implements CardLookupHandler {
   ) {}
 
   async lookup(
-    rawRequest: CardLookupRequest,
+    request: CardLookupRequest,
     context: { authorization: string },
   ): Promise<CardLookupResult> {
-    const request = CardLookupRequestSchema.parse(rawRequest);
     const image = verifiedCardImage(request.imageDataUrl);
     const recognition = request.query
       ? manualRecognition(request.query, request.category)
@@ -539,6 +538,20 @@ export class StatelessCardLookupService implements CardLookupHandler {
       candidates: catalog.candidates,
       warnings: catalog.warnings,
     });
+  }
+
+  /**
+   * Validates unknown input against {@link CardLookupRequestSchema} before
+   * delegating to {@link lookup}. The HTTP route validates the request body
+   * itself and calls `lookup` directly so a request is parsed only once; use
+   * this entry point only for a caller that has not already validated its
+   * input shape.
+   */
+  async lookupUnvalidated(
+    rawRequest: unknown,
+    context: { authorization: string },
+  ): Promise<CardLookupResult> {
+    return this.lookup(CardLookupRequestSchema.parse(rawRequest), context);
   }
 }
 

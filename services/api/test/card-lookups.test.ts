@@ -5,6 +5,7 @@ import {
 import { createHash } from "node:crypto";
 import type OpenAI from "openai";
 import { describe, expect, it, vi } from "vitest";
+import { ZodError } from "zod";
 import { buildApp } from "../src/app.js";
 import {
   GroqCardRecognitionProvider,
@@ -433,6 +434,37 @@ describe("stateless card lookup", () => {
     expect(search).toHaveBeenCalledWith(
       expect.objectContaining({ category: "magic", limit: 8 }),
     );
+  });
+
+  it("validates unknown input through the explicit unvalidated entry point", async () => {
+    const service = new StatelessCardLookupService(
+      {
+        providerName: "test-vision",
+        model: "deterministic-v1",
+        async recognize() {
+          return recognition;
+        },
+      },
+      {
+        async search() {
+          return { candidates: [candidate], warnings: [] };
+        },
+      },
+    );
+
+    await expect(
+      service.lookupUnvalidated(
+        { imageDataUrl, category: "pokemon" },
+        { authorization: "Bearer folio-token" },
+      ),
+    ).resolves.toMatchObject({ imageRetained: false });
+
+    await expect(
+      service.lookupUnvalidated(
+        { imageDataUrl, category: "not-a-real-category" },
+        { authorization: "Bearer folio-token" },
+      ),
+    ).rejects.toBeInstanceOf(ZodError);
   });
 
   it("rejects image bytes that do not match their declared media type", async () => {
