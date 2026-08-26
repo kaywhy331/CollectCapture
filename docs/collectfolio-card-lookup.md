@@ -76,6 +76,12 @@ A recognition-provider failure always responds `502` with `{"error": "<code>", "
 
 ## Privacy and resource limits
 
+### Client crop-contract obligation (G14)
+
+**Every upload path -- camera capture and file picker alike -- must re-encode the crop through canvas before it is sent, so EXIF metadata is stripped and orientation is baked into the pixels.** This is CollectFolio's obligation, not an optional convenience: the server's GPS scan and strict container parsing are a fail-closed backstop against a client that forgets this step, not the primary defense. A client that skips canvas re-encoding on any path -- for example, uploading a file-picker image's raw bytes directly -- risks leaking EXIF GPS coordinates the server's scanner happens to catch, or an orientation flag the server has no way to correct, degrading recognition on a sideways or upside-down crop the server received exactly as sent.
+
+The server counts every `422` rejection by its specific reason (`media_type_mismatch`, `media_hash_mismatch`, `media_metadata_invalid`, `media_location_present`, `media_too_large`, and, when the resolution gate is enabled, `media_resolution_too_low` -- see the [`card_lookup.media_rejected` metric](deploy-card-lookups.md)) precisely so a systematic rise in one reason -- `media_location_present` most of all -- surfaces a field regression in CollectFolio's own re-encoding step, not just an isolated bad upload.
+
 - CollectFolio sends a Canvas-reencoded crop, never the full source photo.
 - This route does not persist the crop in PostgreSQL, Supabase Storage, filesystem storage, application cache, or domain records.
 - Authorization and request bodies are redacted from structured logs. Do not add body logging or error telemetry containing the data URL.
