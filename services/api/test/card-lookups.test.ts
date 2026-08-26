@@ -4,6 +4,12 @@ import {
 } from "@localclear/domain";
 import { createHash } from "node:crypto";
 import type OpenAI from "openai";
+import {
+  APIConnectionError,
+  APIUserAbortError,
+  AuthenticationError,
+  RateLimitError,
+} from "openai";
 import { describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
 import { buildApp } from "../src/app.js";
@@ -95,6 +101,108 @@ describe("OpenAI card recognition", () => {
       expect.objectContaining({ signal: undefined }),
     );
   });
+
+  it("classifies a missing structured output as invalid output (G16)", async () => {
+    const provider = new OpenAICardRecognitionProvider({
+      model: "deterministic-v1",
+      client: {
+        responses: { parse: async () => ({ output_parsed: null }) },
+      } as unknown as OpenAI,
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_invalid_output",
+    });
+  });
+
+  it("classifies an aborted/timed-out SDK call as a timeout (G16)", async () => {
+    const provider = new OpenAICardRecognitionProvider({
+      model: "deterministic-v1",
+      client: {
+        responses: {
+          parse: async () => {
+            throw new APIUserAbortError();
+          },
+        },
+      } as unknown as OpenAI,
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_timeout",
+    });
+  });
+
+  it("classifies an authentication failure as misconfigured (G16)", async () => {
+    const provider = new OpenAICardRecognitionProvider({
+      model: "deterministic-v1",
+      client: {
+        responses: {
+          parse: async () => {
+            throw new AuthenticationError(
+              401,
+              { message: "invalid api key" },
+              "invalid api key",
+              undefined,
+            );
+          },
+        },
+      } as unknown as OpenAI,
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_misconfigured",
+    });
+  });
+
+  it("classifies a rate limit / connection failure as unavailable (G16)", async () => {
+    const rateLimited = new OpenAICardRecognitionProvider({
+      model: "deterministic-v1",
+      client: {
+        responses: {
+          parse: async () => {
+            throw new RateLimitError(
+              429,
+              { message: "rate limited" },
+              "rate limited",
+              undefined,
+            );
+          },
+        },
+      } as unknown as OpenAI,
+    });
+    await expect(
+      rateLimited.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_unavailable",
+    });
+
+    const connectionFailed = new OpenAICardRecognitionProvider({
+      model: "deterministic-v1",
+      client: {
+        responses: {
+          parse: async () => {
+            throw new APIConnectionError({ message: "connection failed" });
+          },
+        },
+      } as unknown as OpenAI,
+    });
+    await expect(
+      connectionFailed.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_unavailable",
+    });
+  });
 });
 
 describe("Ollama card recognition", () => {
@@ -167,7 +275,7 @@ describe("Ollama card recognition", () => {
     });
   });
 
-  it("maps malformed model output to the existing safe provider error", async () => {
+  it("maps malformed model output to the invalid-output provider error (G16)", async () => {
     const provider = new OllamaCardRecognitionProvider({
       baseUrl: "http://127.0.0.1:11434",
       model: "qwen3-vl:4b",
@@ -181,8 +289,7 @@ describe("Ollama card recognition", () => {
       provider.recognize({ imageDataUrl, categoryHint: "all" }),
     ).rejects.toMatchObject({
       statusCode: 502,
-      code: "card_recognition_failed",
-      message: "CollectCapture could not recognize this card image",
+      code: "card_recognition_invalid_output",
     });
   });
 
@@ -270,7 +377,7 @@ describe("Ollama card recognition", () => {
       provider.recognize({ imageDataUrl, categoryHint: "all" }),
     ).rejects.toMatchObject({
       statusCode: 502,
-      code: "card_recognition_failed",
+      code: "card_recognition_invalid_output",
     });
     expect(calls).toBe(2);
   });
@@ -296,10 +403,40 @@ describe("Ollama card recognition", () => {
       provider.recognize({ imageDataUrl, categoryHint: "all" }),
     ).rejects.toMatchObject({
       statusCode: 502,
-      code: "card_recognition_failed",
+      code: "card_recognition_timeout",
     });
     expect(calls).toBe(1);
   }, 5_000);
+
+  it("classifies an upstream 503 as unavailable (G16)", async () => {
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      fetchImpl: async () => new Response("unavailable", { status: 503 }),
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_unavailable",
+    });
+  });
+
+  it("classifies an upstream 401 as misconfigured (G16)", async () => {
+    const provider = new OllamaCardRecognitionProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3-vl:4b",
+      fetchImpl: async () => new Response("unauthorized", { status: 401 }),
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "all" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_misconfigured",
+    });
+  });
 
   it("rejects an Ollama URL that could redirect recognition requests", () => {
     expect(
@@ -548,6 +685,79 @@ describe("Groq card recognition", () => {
           strict: true,
         }),
       },
+    });
+  });
+
+  it("classifies malformed model output as invalid output (G16)", async () => {
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "qwen/qwen3.6-27b",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "not valid json" } }],
+          }),
+          { status: 200 },
+        ),
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "magic" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_invalid_output",
+    });
+  });
+
+  it("classifies an abort/timeout as a timeout (G16)", async () => {
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "qwen/qwen3.6-27b",
+      timeoutMs: 1_000,
+      fetchImpl: async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal;
+          signal.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted", "AbortError")),
+          );
+        }),
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "magic" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_timeout",
+    });
+  }, 5_000);
+
+  it("classifies an upstream 429 as unavailable (G16)", async () => {
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "qwen/qwen3.6-27b",
+      fetchImpl: async () => new Response("rate limited", { status: 429 }),
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "magic" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_unavailable",
+    });
+  });
+
+  it("classifies an upstream 403 as misconfigured (G16)", async () => {
+    const provider = new GroqCardRecognitionProvider({
+      apiKey: "groq-test-key",
+      model: "qwen/qwen3.6-27b",
+      fetchImpl: async () => new Response("forbidden", { status: 403 }),
+    });
+
+    await expect(
+      provider.recognize({ imageDataUrl, categoryHint: "magic" }),
+    ).rejects.toMatchObject({
+      statusCode: 502,
+      code: "card_recognition_misconfigured",
     });
   });
 });

@@ -60,6 +60,18 @@ The response is cache-disabled and has this shape:
 
 Candidates contain identity metadata and an exact TCGCSV `(categoryId, groupId, productId)` tuple, but always have `matchBucket: "likely"`. Prices are null/absent by contract. Only CollectFolio's collector-driven selection and separate confirmation can promote one tuple to an approved holding.
 
+## Recognition provider error codes
+
+A recognition-provider failure always responds `502` with `{"error": "<code>", "message": "..."}`. Today's generic `card_recognition_failed` remains the fallback for a failure that does not fit one of the more specific codes below. The specific codes are **additive and pending CollectFolio-lane acknowledgment** -- until CollectFolio's client reads them, treat any `502` from this route the way it already does.
+
+| Code                              | Meaning                                                                                                                    | CollectFolio guidance                                                                   |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `card_recognition_timeout`        | The provider call was aborted or exceeded its configured timeout.                                                          | Safe to retry once; if it recurs, the configured provider/timeout may be undersized.    |
+| `card_recognition_unavailable`    | A network-level failure, or the provider responded 429 or 5xx.                                                             | Safe to retry with backoff; treat like any other transient upstream outage.             |
+| `card_recognition_misconfigured`  | The provider rejected the request as unauthorized/forbidden, or the model was not found.                                   | Do not retry; report -- this is an operator configuration problem, not a transient one. |
+| `card_recognition_invalid_output` | The provider responded, but its output never parsed/validated even after CollectCapture's built-in salvage-and-retry pass. | Safe to retry once from the client; report if it recurs for the same card.              |
+| `card_recognition_failed`         | Unclassifiable failure (today's existing generic code).                                                                    | Unchanged: retry the way CollectFolio already does today.                               |
+
 ## Privacy and resource limits
 
 - CollectFolio sends a Canvas-reencoded crop, never the full source photo.

@@ -10,7 +10,16 @@ import {
   type CardLookupResult,
   type CardRecognition,
 } from "@localclear/domain";
-import OpenAI from "openai";
+import OpenAI, {
+  APIConnectionError,
+  APIConnectionTimeoutError,
+  APIUserAbortError,
+  AuthenticationError,
+  InternalServerError,
+  NotFoundError,
+  PermissionDeniedError,
+  RateLimitError,
+} from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import type { ResponseInputContent } from "openai/resources/responses/responses";
 import { z } from "zod";
@@ -146,6 +155,112 @@ function salvageRecognitionPayload(raw: unknown): unknown {
   return salvaged;
 }
 
+/**
+ * The card_recognition_* error taxonomy (G16). All still respond `502` --
+ * this only replaces one generic code with one that tells CollectFolio
+ * whether the failure is worth retrying automatically
+ * (`_timeout`/`_unavailable`), is an operator configuration problem
+ * (`_misconfigured`), or is an output CollectCapture itself could not use
+ * (`_invalid_output`, the post-G5 salvage-and-retry still failing). A
+ * failure that does not fit any of those keeps today's generic
+ * `card_recognition_failed` code. See `docs/collectfolio-card-lookup.md`
+ * for the retry-vs-report guidance CollectFolio should apply per code.
+ */
+export type CardRecognitionFailureCode =
+  | "card_recognition_timeout"
+  | "card_recognition_unavailable"
+  | "card_recognition_misconfigured"
+  | "card_recognition_invalid_output"
+  | "card_recognition_failed";
+
+const RECOGNITION_FAILURE_MESSAGES: Record<CardRecognitionFailureCode, string> =
+  {
+    card_recognition_timeout:
+      "The card recognition provider took too long to respond. Please try again.",
+    card_recognition_unavailable:
+      "The card recognition provider is temporarily unavailable. Please try again shortly.",
+    card_recognition_misconfigured:
+      "The card recognition provider is not configured correctly. Please contact support.",
+    card_recognition_invalid_output:
+      "The card recognition provider returned output CollectCapture could not use. Please try again.",
+    card_recognition_failed:
+      "CollectCapture could not recognize this card image",
+  };
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+/**
+ * Carries the upstream HTTP status of a raw-fetch provider's (Ollama/Groq)
+ * non-OK response so the catch site can classify it (G16) without
+ * re-parsing the already-consumed response.
+ */
+class RecognitionUpstreamError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "RecognitionUpstreamError";
+  }
+}
+
+/** Classifies an Ollama/Groq recognition failure into the G16 taxonomy. */
+function classifyFetchRecognitionFailure(
+  error: unknown,
+): CardRecognitionFailureCode {
+  if (error instanceof RecognitionOutputValidationError) {
+    return "card_recognition_invalid_output";
+  }
+  if (isAbortError(error)) return "card_recognition_timeout";
+  if (error instanceof RecognitionUpstreamError) {
+    if ([401, 403, 404].includes(error.status)) {
+      return "card_recognition_misconfigured";
+    }
+    if (error.status === 429 || error.status >= 500) {
+      return "card_recognition_unavailable";
+    }
+    return "card_recognition_failed";
+  }
+  // Node's fetch (undici) throws a bare TypeError for DNS/connect failures
+  // and other transport-level problems -- never for a validation failure,
+  // which is always wrapped above.
+  if (error instanceof TypeError) return "card_recognition_unavailable";
+  return "card_recognition_failed";
+}
+
+/** Classifies an OpenAI SDK recognition failure into the G16 taxonomy. */
+function classifyOpenAIRecognitionFailure(
+  error: unknown,
+): CardRecognitionFailureCode {
+  if (error instanceof RecognitionOutputValidationError) {
+    return "card_recognition_invalid_output";
+  }
+  if (
+    error instanceof APIUserAbortError ||
+    error instanceof APIConnectionTimeoutError ||
+    isAbortError(error)
+  ) {
+    return "card_recognition_timeout";
+  }
+  if (
+    error instanceof AuthenticationError ||
+    error instanceof PermissionDeniedError ||
+    error instanceof NotFoundError
+  ) {
+    return "card_recognition_misconfigured";
+  }
+  if (
+    error instanceof RateLimitError ||
+    error instanceof InternalServerError ||
+    error instanceof APIConnectionError
+  ) {
+    return "card_recognition_unavailable";
+  }
+  return "card_recognition_failed";
+}
+
 export class OpenAICardRecognitionProvider implements CardRecognitionProvider {
   readonly providerName = "openai";
   readonly model: string;
@@ -224,10 +339,11 @@ export class OpenAICardRecognitionProvider implements CardRecognitionProvider {
     try {
       return await withOneValidationRetry(input.signal, attempt);
     } catch (error) {
+      const code = classifyOpenAIRecognitionFailure(error);
       throw new ApplicationError(
         502,
-        "card_recognition_failed",
-        "CollectCapture could not recognize this card image",
+        code,
+        RECOGNITION_FAILURE_MESSAGES[code],
         error instanceof Error ? { cause: error.name } : undefined,
       );
     }
@@ -305,7 +421,8 @@ export class OllamaCardRecognitionProvider implements CardRecognitionProvider {
         "The recognition provider response exceeded its size limit",
       );
       if (!response.ok) {
-        throw new Error(
+        throw new RecognitionUpstreamError(
+          response.status,
           `The recognition provider returned HTTP ${response.status}`,
         );
       }
@@ -330,10 +447,11 @@ export class OllamaCardRecognitionProvider implements CardRecognitionProvider {
     try {
       return await withOneValidationRetry(input.signal, attempt);
     } catch (error) {
+      const code = classifyFetchRecognitionFailure(error);
       throw new ApplicationError(
         502,
-        "card_recognition_failed",
-        "CollectCapture could not recognize this card image",
+        code,
+        RECOGNITION_FAILURE_MESSAGES[code],
         error instanceof Error ? { cause: error.name } : undefined,
       );
     }
@@ -458,7 +576,8 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
         "The recognition provider response exceeded its size limit",
       );
       if (!response.ok) {
-        throw new Error(
+        throw new RecognitionUpstreamError(
+          response.status,
           `The recognition provider returned HTTP ${response.status}`,
         );
       }
@@ -485,10 +604,11 @@ export class GroqCardRecognitionProvider implements CardRecognitionProvider {
     try {
       return await withOneValidationRetry(input.signal, attempt);
     } catch (error) {
+      const code = classifyFetchRecognitionFailure(error);
       throw new ApplicationError(
         502,
-        "card_recognition_failed",
-        "CollectCapture could not recognize this card image",
+        code,
+        RECOGNITION_FAILURE_MESSAGES[code],
         error instanceof Error ? { cause: error.name } : undefined,
       );
     }
