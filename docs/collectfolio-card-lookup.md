@@ -33,6 +33,8 @@ Standalone build, container, edge, scaling, qualification, and rollback instruct
 
 The endpoint requires `Authorization: Bearer <CollectFolio Supabase JWT>`, accepts at most 30 requests per principal per hour, and has a 3 MB HTTP body limit.
 
+The 30/hour ceiling was reviewed against CollectFolio's real capture cadence (one automatic lookup per detected crop; a 300-card binder is an intended session) and **deliberately sustained** on 2026-08-27. Three things keep it fair in practice: successful responses carry `x-ratelimit-limit` / `x-ratelimit-remaining` / `x-ratelimit-reset` so the client can surface remaining quota before it runs out, a lookup that fails server-side refunds its unit, and a busy rejection is never charged. A collector who exhausts the hour receives `429 rate_limited` with `retry-after`.
+
 ```json
 {
   "imageDataUrl": "data:image/jpeg;base64,...",
