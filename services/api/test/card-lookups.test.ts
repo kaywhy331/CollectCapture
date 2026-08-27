@@ -960,6 +960,31 @@ describe("stateless card lookup", () => {
     );
   });
 
+  it("runs a text-only refinement without an image and returns a null hash", async () => {
+    const recognize = vi.fn(async () => recognition);
+    const search = vi.fn(async () => ({ candidates: [], warnings: [] }));
+    const service = new StatelessCardLookupService(
+      {
+        providerName: "test-vision",
+        model: "deterministic-v1",
+        recognize,
+      },
+      { search },
+    );
+
+    const result = await service.lookup(
+      { query: "Black Lotus LEA", category: "magic", limit: 8 },
+      { authorization: "Bearer folio-token" },
+    );
+
+    expect(recognize).not.toHaveBeenCalled();
+    expect(result.contentSha256).toBeNull();
+    expect(result.imageRetained).toBe(false);
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ category: "magic" }),
+    );
+  });
+
   it("validates unknown input through the explicit unvalidated entry point", async () => {
     const service = new StatelessCardLookupService(
       {

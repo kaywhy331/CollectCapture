@@ -50,9 +50,10 @@ export interface CardLookupHttpOptions {
   refundQuota?: (key: string) => void;
 }
 
-/** Prefixes every per-user quota key so it can never collide with the
- * global limiter's own (raw IP/`cf-connecting-ip`) keys in a shared
- * refundable store (see card-lookup-rate-limit-store.ts). */
+/** Prefixes every per-user quota key. Limiter maps are isolated per
+ * child (see card-lookup-rate-limit-store.ts), but `refund` decrements a
+ * key wherever it appears, so quota keys stay namespaced to guarantee
+ * they exist in exactly one limiter's map. */
 function cardLookupQuotaKey(userId: string): string {
   return `collectfolio-card-lookups:${userId}`;
 }

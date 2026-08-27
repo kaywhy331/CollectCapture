@@ -252,9 +252,9 @@ export async function buildCardLookupApp(
   // A refundable store (G7) so the per-user 30/hour quota that
   // `cardLookupHttpPlugin` charges through `app.createRateLimit` below can
   // give back a unit for a lookup that failed server-side. Built fresh per
-  // app so its backing map never leaks between independently built apps;
-  // see the store's own docs for why the global limiter below and the
-  // per-user quota can safely share it.
+  // app so its state never leaks between independently built apps; each
+  // limiter (the global one below, the per-user quota) gets its own
+  // isolated map, matching the library's own LocalStore semantics.
   const cardLookupQuotaStore = createRefundableRateLimitStore();
   await app.register(rateLimit, {
     global: true,

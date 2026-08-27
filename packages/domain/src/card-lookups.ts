@@ -12,6 +12,9 @@ export type CardLookupCategory = z.infer<typeof CardLookupCategorySchema>;
 
 export const CardLookupRequestSchema = z
   .object({
+    // Optional only for a text-only refinement (a non-empty `query`), so a
+    // manual correction does not have to re-upload the crop it is
+    // refining. A vision lookup (empty `query`) always requires the image.
     imageDataUrl: z
       .string()
       .min(32)
@@ -19,12 +22,20 @@ export const CardLookupRequestSchema = z
       .regex(
         /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/,
         "Card image must be a base64 JPEG, PNG, or WebP data URL",
-      ),
+      )
+      .optional(),
     query: z.string().trim().max(240).default(""),
     category: CardLookupCategorySchema.default("all"),
     limit: z.number().int().min(1).max(24).default(12),
   })
-  .strict();
+  .strict()
+  .refine(
+    (request) => request.imageDataUrl !== undefined || request.query !== "",
+    {
+      message: "Provide a card image, a text query, or both",
+      path: ["imageDataUrl"],
+    },
+  );
 export type CardLookupRequest = z.infer<typeof CardLookupRequestSchema>;
 
 export const CardRecognitionSchema = z
@@ -77,7 +88,11 @@ export type CardLookupCandidate = z.infer<typeof CardLookupCandidateSchema>;
 
 export const CardLookupResultSchema = z
   .object({
-    contentSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    // Null only for a text-only refinement, where no image was submitted.
+    contentSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
     imageRetained: z.literal(false),
     recognition: CardRecognitionSchema,
     candidates: z.array(CardLookupCandidateSchema).max(24),
