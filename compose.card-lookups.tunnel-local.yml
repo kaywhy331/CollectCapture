@@ -1,0 +1,23 @@
+services:
+  card-lookups:
+    environment:
+      TRUSTED_PROXY_MODE: cloudflare-tunnel
+
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2026.8.2}
+    command:
+      - tunnel
+      - --config
+      - /etc/cloudflared/config.yml
+      - run
+    volumes:
+      - ./.cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - card-lookups
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

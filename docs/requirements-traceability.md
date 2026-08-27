@@ -1,6 +1,6 @@
 # LocalClear requirement traceability
 
-This ledger maps every functional requirement in PRD section 11 to the repository as of 2026-08-20. A repository-local result is not a public-release claim.
+This ledger maps every functional requirement in PRD section 11 to the repository as of 2026-08-21. A repository-local result is not a public-release claim.
 
 Status meanings:
 
@@ -186,6 +186,18 @@ The PRD’s 500-item accuracy, OCR, copy-acceptance, and pricing-quality thresho
 | OPS-04 | Verified | Connector/feature changes, releases, approvals, deployments, rollbacks, grants, diagnostics, and audits persist; critical histories are SQL-immutable.                                                          |
 | OPS-05 | Verified | Policy status, approval evidence URL, review date, production method, canary ID, and owner are governed inputs.                                                                                                 |
 | OPS-06 | Verified | The operations API raises failure-spike, account-challenge, and duplicate-rate alerts from the last 24 hours.                                                                                                   |
+
+## CollectFolio card-lookup integration
+
+This optional cross-product lane is outside the LocalClear V1 marketplace workflow and does not change its release status.
+
+| ID     | Status        | Evidence and boundary                                                                                                                                                                                                                                                                             |
+| ------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CFI-01 | Verified      | The route uses a dedicated CollectFolio issuer/JWKS verifier and is absent unless its verifier and stateless service are configured together.                                                                                                                                                     |
+| CFI-02 | Verified      | Strict request/media limits, request-wide provider deadlines, rate limiting, no-store responses, and redacted logs bound the crop lookup.                                                                                                                                                         |
+| CFI-03 | Verified      | The handler computes a content digest, does not write images or lookup results to persistence, uses `store: false` for OpenAI Responses, and returns the mandatory `imageRetained: false` assertion; external provider data controls remain a deployment disclosure.                              |
+| CFI-04 | Verified      | Catalog calls preserve the CollectFolio bearer boundary and candidates expose identity-only TCGCSV tuples with `matchBucket: likely`, never an automatic approval or price.                                                                                                                       |
+| CFI-05 | External gate | Production still requires an exact deployed origin/CORS pair, reviewed selected-provider data controls, secret/configuration review, representative provider/model accuracy and latency evidence, end-to-end issuer/origin/log/storage qualification, and integration-specific security approval. |
 
 ## Technical and release completion
 

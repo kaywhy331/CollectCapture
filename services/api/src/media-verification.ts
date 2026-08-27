@@ -27,7 +27,8 @@ export class MediaVerificationError extends Error {
       | "media_type_mismatch"
       | "media_hash_mismatch"
       | "media_metadata_invalid"
-      | "media_location_present",
+      | "media_location_present"
+      | "media_resolution_too_low",
     message: string,
     options?: ErrorOptions,
   ) {
@@ -49,6 +50,10 @@ export function verifyMediaBytes(
   bytes: Uint8Array,
   request: Omit<MediaVerificationRequest, "storagePath">,
   maxBytes = 20 * 1024 * 1024,
+  /** Shortest-side pixel minimum (G22). `0` (the default) disables the
+   * check entirely -- dimensions are not even parsed -- so this stays a
+   * strict no-op addition for every existing caller. */
+  minDimension = 0,
 ): VerifiedMedia {
   if (bytes.byteLength > maxBytes) {
     throw new MediaVerificationError(
@@ -76,12 +81,132 @@ export function verifyMediaBytes(
       "Uploaded media still contains GPS location metadata",
     );
   }
+  if (minDimension > 0) {
+    const { width, height } = imageDimensions(bytes, mediaType);
+    const shortestSide = Math.min(width, height);
+    if (shortestSide < minDimension) {
+      throw new MediaVerificationError(
+        "media_resolution_too_low",
+        `The photo is too small to search accurately (shortest side ${shortestSide}px, minimum ${minDimension}px). Please retake it larger or move closer to the card.`,
+      );
+    }
+  }
   return {
     contentSha256,
     mediaType,
     exifLocationStripped: true,
     sizeBytes: bytes.byteLength,
   };
+}
+
+export interface ImageDimensions {
+  width: number;
+  height: number;
+}
+
+/**
+ * Parses pixel dimensions from container headers only (G22) -- PNG's IHDR
+ * chunk, a JPEG baseline/progressive SOFn segment, or a WebP VP8/VP8L/VP8X
+ * chunk header. Never decodes pixel data. A malformed or truncated
+ * container where dimensions should be throws `media_metadata_invalid`,
+ * matching the GPS scanner's existing strict-parser conventions.
+ */
+export function imageDimensions(
+  bytes: Uint8Array,
+  mediaType: SupportedMediaType,
+): ImageDimensions {
+  if (mediaType === "image/png") return pngDimensions(bytes);
+  if (mediaType === "image/jpeg") return jpegDimensions(bytes);
+  return webpDimensions(bytes);
+}
+
+function pngDimensions(bytes: Uint8Array): ImageDimensions {
+  if (bytes.length < 24 || ascii(bytes, 12, 4) !== "IHDR") {
+    throw invalidMetadata("PNG is missing its leading IHDR chunk");
+  }
+  return {
+    width: readUint32(bytes, 16, false),
+    height: readUint32(bytes, 20, false),
+  };
+}
+
+function jpegDimensions(bytes: Uint8Array): ImageDimensions {
+  let offset = 2;
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      throw invalidMetadata("Malformed JPEG marker stream");
+    }
+    while (bytes[offset] === 0xff) offset += 1;
+    const marker = bytes[offset++];
+    if (marker === undefined) {
+      throw invalidMetadata("Truncated JPEG marker stream");
+    }
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > bytes.length)
+      throw invalidMetadata("Truncated JPEG segment");
+    const segmentLength = readUint16(bytes, offset, false);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) {
+      throw invalidMetadata("Invalid JPEG segment length");
+    }
+    const dataOffset = offset + 2;
+    const dataLength = segmentLength - 2;
+    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+      if (dataLength < 5) throw invalidMetadata("Truncated JPEG SOF segment");
+      return {
+        height: readUint16(bytes, dataOffset + 1, false),
+        width: readUint16(bytes, dataOffset + 3, false),
+      };
+    }
+    offset += segmentLength;
+  }
+  throw invalidMetadata("JPEG is missing a SOF0/SOF1/SOF2 segment");
+}
+
+function webpDimensions(bytes: Uint8Array): ImageDimensions {
+  const declaredSize = readUint32(bytes, 4, true) + 8;
+  if (declaredSize < 20 || declaredSize > bytes.length) {
+    throw invalidMetadata("Invalid WebP container length");
+  }
+  const fourCc = ascii(bytes, 12, 4);
+  const dataOffset = 20;
+  if (fourCc === "VP8X") {
+    if (bytes.length < dataOffset + 10) {
+      throw invalidMetadata("Truncated WebP VP8X chunk");
+    }
+    return {
+      width: readUint24(bytes, dataOffset + 4, true) + 1,
+      height: readUint24(bytes, dataOffset + 7, true) + 1,
+    };
+  }
+  if (fourCc === "VP8L") {
+    if (
+      bytes.length < dataOffset + 5 ||
+      bytes[dataOffset] !== 0x2f // VP8L signature byte
+    ) {
+      throw invalidMetadata("Invalid WebP VP8L bitstream header");
+    }
+    const bits = readUint32(bytes, dataOffset + 1, true);
+    return {
+      width: (bits & 0x3fff) + 1,
+      height: ((bits >>> 14) & 0x3fff) + 1,
+    };
+  }
+  if (fourCc === "VP8 ") {
+    if (
+      bytes.length < dataOffset + 10 ||
+      bytes[dataOffset + 3] !== 0x9d || // VP8 keyframe start code
+      bytes[dataOffset + 4] !== 0x01 ||
+      bytes[dataOffset + 5] !== 0x2a
+    ) {
+      throw invalidMetadata("Invalid WebP VP8 bitstream header");
+    }
+    return {
+      width: readUint16(bytes, dataOffset + 6, true) & 0x3fff,
+      height: readUint16(bytes, dataOffset + 8, true) & 0x3fff,
+    };
+  }
+  throw invalidMetadata("WebP is missing a leading VP8/VP8L/VP8X chunk");
 }
 
 function sniffMediaType(bytes: Uint8Array): SupportedMediaType | null {
@@ -285,6 +410,19 @@ function readUint32(
       (bytes[offset + 2]! << 8) |
       bytes[offset + 3]!;
   return value >>> 0;
+}
+
+function readUint24(
+  bytes: Uint8Array,
+  offset: number,
+  littleEndian: boolean,
+): number {
+  if (offset < 0 || offset + 3 > bytes.length) {
+    throw invalidMetadata("Metadata read exceeded file bounds");
+  }
+  return littleEndian
+    ? bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16)
+    : (bytes[offset]! << 16) | (bytes[offset + 1]! << 8) | bytes[offset + 2]!;
 }
 
 function ascii(bytes: Uint8Array, offset: number, length: number): string {

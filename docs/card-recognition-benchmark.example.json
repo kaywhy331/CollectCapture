@@ -1,0 +1,35 @@
+{
+  "minimumPassRate": 0.9,
+  "cases": [
+    {
+      "id": "pokemon-charizard-example",
+      "image": "cards/charizard-example.jpg",
+      "category": "pokemon",
+      "expected": {
+        "category": "pokemon",
+        "name": "Charizard ex",
+        "setName": "Obsidian Flames",
+        "collectorNumber": "223/197",
+        "language": "en",
+        "visibleText": ["Charizard ex", "223/197"]
+      },
+      "expectedCatalog": {
+        "name": "Charizard ex",
+        "setName": "Obsidian Flames",
+        "collectorNumber": "223/197",
+        "topN": 5
+      }
+    },
+    {
+      "id": "obscured-set-example",
+      "image": "cards/obscured-set-example.jpg",
+      "category": "magic",
+      "expected": {
+        "name": "Black Lotus",
+        "setName": null,
+        "collectorNumber": null,
+        "language": "en"
+      }
+    }
+  ]
+}

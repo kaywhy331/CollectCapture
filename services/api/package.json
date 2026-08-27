@@ -4,10 +4,15 @@
   "private": true,
   "type": "module",
   "main": "./dist/server.js",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
+    "dev:card-lookups": "tsx watch src/card-lookup-server.ts",
     "start": "node dist/server.js",
+    "start:card-lookups": "node dist/card-lookup-server.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit"

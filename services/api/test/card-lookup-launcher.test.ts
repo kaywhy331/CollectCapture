@@ -1,0 +1,257 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
+const launcher = join(repositoryRoot, "scripts/launch-card-lookups.mjs");
+const redPcLauncher = join(repositoryRoot, "scripts/red-pc-card-lookups.ps1");
+const redPcDoubleClickLauncher = join(
+  repositoryRoot,
+  "START-COLLECTCAPTURE-HTTPS.cmd",
+);
+const redPcInstaller = join(
+  repositoryRoot,
+  "INSTALL-COLLECTCAPTURE-RED-PC.cmd",
+);
+const redPcBootstrap = join(repositoryRoot, "bootstrap-red-pc.ps1");
+const requiredVariables = [
+  "CARD_RECOGNITION_PROVIDER",
+  "OPENAI_API_KEY",
+  "OLLAMA_API_KEY",
+  "GROQ_API_KEY",
+  "COLLECTFOLIO_APP_URL",
+  "COLLECTFOLIO_SUPABASE_URL",
+  "COLLECTFOLIO_CATALOG_URL",
+];
+
+function sanitizedEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  for (const name of requiredVariables) delete environment[name];
+  return environment;
+}
+
+describe("card lookup launcher", () => {
+  it("defines the RED PC cloud, CPU, NVIDIA, and qualification paths", () => {
+    const powerShell = readFileSync(redPcLauncher, "utf8");
+    const baseCompose = readFileSync(
+      join(repositoryRoot, "compose.card-lookups.yml"),
+      "utf8",
+    );
+    const localCompose = readFileSync(
+      join(repositoryRoot, "compose.card-lookups.ollama-local.yml"),
+      "utf8",
+    );
+    const nvidiaCompose = readFileSync(
+      join(repositoryRoot, "compose.card-lookups.nvidia.yml"),
+      "utf8",
+    );
+
+    expect(powerShell).toContain(
+      '[ValidateSet("Groq", "OllamaCloud", "OllamaLocal")]',
+    );
+    expect(powerShell).toContain('"Qualify"');
+    expect(baseCompose).toContain("${COLLECTCAPTURE_BIND_ADDRESS:-127.0.0.1}");
+    expect(localCompose).toContain("condition: service_completed_successfully");
+    expect(localCompose).toContain("ollama pull");
+    expect(nvidiaCompose).toContain("gpus: all");
+  });
+
+  it("defines automatic local and manual token-based Cloudflare Tunnel paths", () => {
+    const powerShell = readFileSync(redPcLauncher, "utf8");
+    const tunnelCompose = readFileSync(
+      join(repositoryRoot, "compose.card-lookups.tunnel.yml"),
+      "utf8",
+    );
+    const localTunnelCompose = readFileSync(
+      join(repositoryRoot, "compose.card-lookups.tunnel-local.yml"),
+      "utf8",
+    );
+    const environmentTemplate = readFileSync(
+      join(repositoryRoot, ".env.card-lookups.red-pc.example"),
+      "utf8",
+    );
+    const gitignore = readFileSync(join(repositoryRoot, ".gitignore"), "utf8");
+    const tunnelGuide = readFileSync(
+      join(repositoryRoot, "docs/red-pc-cloudflare-tunnel.md"),
+      "utf8",
+    );
+
+    expect(powerShell).toContain("[switch]$Tunnel");
+    expect(powerShell).toContain('"CLOUDFLARE_TUNNEL_HOSTNAME"');
+    expect(powerShell).toContain('"CLOUDFLARE_TUNNEL_TOKEN"');
+    expect(powerShell).toContain('$arguments += @("-f", $TunnelComposeFile)');
+    expect(powerShell).toContain("$LocalTunnelConfigFile");
+    expect(powerShell).toContain(
+      '$arguments += @("-f", $LocalTunnelComposeFile)',
+    );
+    expect(tunnelCompose).toContain("cloudflare/cloudflared:2026.8.2");
+    expect(tunnelCompose).toContain("TUNNEL_TOKEN:");
+    expect(tunnelCompose).toContain("${CLOUDFLARE_TUNNEL_TOKEN:?");
+    expect(tunnelCompose).not.toContain("--token");
+    expect(tunnelCompose).not.toContain("ports:");
+    expect(localTunnelCompose).toContain("cloudflare/cloudflared:2026.8.2");
+    expect(localTunnelCompose).toContain("/etc/cloudflared/config.yml");
+    expect(localTunnelCompose).toContain("./.cloudflared:/etc/cloudflared:ro");
+    expect(localTunnelCompose).not.toContain("TUNNEL_TOKEN");
+    expect(localTunnelCompose).not.toContain("ports:");
+    expect(environmentTemplate).toContain("CLOUDFLARE_TUNNEL_HOSTNAME=");
+    expect(environmentTemplate).toContain("CLOUDFLARE_TUNNEL_TOKEN=");
+    expect(gitignore).toContain(".cloudflared/");
+    expect(tunnelGuide).toContain("http://card-lookups:4100");
+    expect(tunnelGuide).toContain("No router port-forward");
+  });
+
+  it("provides a verified one-command bootstrap for an empty RED PC", () => {
+    const bootstrap = readFileSync(redPcBootstrap, "utf8");
+    const installer = readFileSync(redPcInstaller, "utf8");
+    const redPcGuide = readFileSync(
+      join(repositoryRoot, "docs/red-pc-card-lookups.md"),
+      "utf8",
+    );
+
+    expect(bootstrap).toContain(
+      "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
+    );
+    expect(bootstrap).toContain('"--accept-license"');
+    expect(bootstrap).toContain('"--user"');
+    expect(bootstrap).toContain("Get-AuthenticodeSignature");
+    expect(bootstrap).toContain("Get-FileHash");
+    expect(bootstrap).toContain("cloudflared-windows-amd64.exe");
+    expect(bootstrap).toContain("tunnel login");
+    expect(bootstrap).toContain("tunnel create");
+    expect(bootstrap).toContain("tunnel route dns");
+    expect(bootstrap).not.toContain("--overwrite-dns");
+    expect(bootstrap).toContain("Read-Host $label -AsSecureString");
+    expect(bootstrap).toContain("[switch]$ConfigureOnly");
+    expect(bootstrap).toContain(
+      'Write-WizardStep 1 "Connect the CollectFolio website"',
+    );
+    expect(bootstrap).toContain(
+      'Write-WizardStep 2 "Connect CollectFolio sign-in"',
+    );
+    expect(bootstrap).toContain(
+      'Write-WizardStep 3 "Connect the card catalog"',
+    );
+    expect(bootstrap).toContain(
+      'Write-WizardStep 4 "Choose card-recognition processing"',
+    );
+    expect(bootstrap).toContain(
+      'Write-WizardStep 5 "Choose the public HTTPS address"',
+    );
+    expect(bootstrap).toContain("Review and register these settings");
+    expect(bootstrap).toContain("press Enter to keep the saved key");
+    expect(bootstrap).toContain("Test-ConfigurationReady");
+    expect(bootstrap).toContain(
+      "Test-LocalTunnelConfiguration -Hostname $Hostname",
+    );
+    expect(bootstrap).toContain("RunOnce");
+    expect(bootstrap).toContain("Invoke-RestMethod");
+    expect(bootstrap).toContain("CollectCapture HTTPS.lnk");
+    expect(bootstrap).not.toContain("CLOUDFLARE_TUNNEL_TOKEN=");
+
+    const checksum = installer.match(/BOOTSTRAP_SHA256=([a-f0-9]{64})/i)?.[1];
+    expect(checksum).toMatch(/^[a-f0-9]{64}$/i);
+    expect(checksum).toBe(createHash("sha256").update(bootstrap).digest("hex"));
+    expect(installer).toContain(
+      "raw.githubusercontent.com/kaywhy331/CollectCapture",
+    );
+    expect(installer).toContain("Get-FileHash");
+    expect(redPcGuide).toContain("either PowerShell or Command Prompt");
+    expect(redPcGuide).toContain("No Git, Node.js, package manager");
+    expect(redPcGuide).toContain(checksum);
+    const pasteCommand = redPcGuide.match(/^powershell\.exe .*$/m)?.[0];
+    expect(pasteCommand).not.toContain("$");
+  });
+
+  it("provides a double-click RED PC HTTPS launcher", () => {
+    const batchFile = readFileSync(redPcDoubleClickLauncher, "utf8");
+
+    expect(batchFile).toContain("CollectCapture HTTPS Launcher");
+    expect(batchFile).toContain("-Provider Groq -Tunnel");
+    expect(batchFile).toContain("-Provider OllamaCloud -Tunnel");
+    expect(batchFile).toContain("-Provider OllamaLocal -Nvidia -Tunnel");
+    expect(batchFile).toContain("-Provider OllamaLocal -Tunnel");
+    expect(batchFile).toContain("bootstrap-red-pc.ps1");
+    expect(batchFile).toContain("-ConfigureOnly");
+    expect(batchFile).toContain('-Provider "%~2"');
+    expect(batchFile).toContain("-Reconfigure");
+    expect(batchFile).toContain("Guided setup / change settings");
+    expect(batchFile).not.toContain("notepad.exe");
+    expect(batchFile).toContain("-Action Down -Provider Groq");
+    expect(batchFile).not.toContain("CLOUDFLARE_TUNNEL_TOKEN=");
+  });
+
+  it("documents the one-command and watch-mode entry points", () => {
+    const result = spawnSync(process.execPath, [launcher, "--help"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: sanitizedEnvironment(),
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("pnpm launch:card-lookups");
+    expect(result.stdout).toContain("--watch");
+  });
+
+  it("fails fast with setup instructions when configuration is missing", () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "collectcapture-card-lookup-launcher-"),
+    );
+    const environmentFile = join(temporaryDirectory, "empty.env");
+    writeFileSync(environmentFile, "");
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [launcher, "--env-file", environmentFile],
+        {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          env: sanitizedEnvironment(),
+        },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Missing required configuration");
+      expect(result.stderr).toContain(".env.card-lookups.example");
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  it("requires the selected cloud provider key instead of an OpenAI key", () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "collectcapture-card-lookup-launcher-"),
+    );
+    const environmentFile = join(temporaryDirectory, "groq.env");
+    writeFileSync(
+      environmentFile,
+      [
+        "CARD_RECOGNITION_PROVIDER=groq",
+        "COLLECTFOLIO_APP_URL=https://folio.example.test",
+        "COLLECTFOLIO_SUPABASE_URL=https://folio-project.example.test",
+        "COLLECTFOLIO_CATALOG_URL=https://catalog.example.test",
+      ].join("\n"),
+    );
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [launcher, "--env-file", environmentFile],
+        {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          env: sanitizedEnvironment(),
+        },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("GROQ_API_KEY");
+      expect(result.stderr).not.toContain("OPENAI_API_KEY");
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+});

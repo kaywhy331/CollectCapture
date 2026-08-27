@@ -62,6 +62,8 @@ import {
   UpdateMeetupRequestSchema,
 } from "./contracts.js";
 import { ApplicationError } from "./errors.js";
+import type { CardLookupHandler } from "./card-lookups.js";
+import { cardLookupHttpPlugin } from "./card-lookup-http.js";
 import { registerHttpObservability } from "./observability.js";
 import type { Repository } from "./repository.js";
 
@@ -114,6 +116,8 @@ const NotificationParamsSchema = HouseholdParamsSchema.extend({
 export interface BuildAppOptions {
   repository: Repository;
   tokenVerifier: TokenVerifier;
+  cardLookupTokenVerifier?: TokenVerifier;
+  cardLookupService?: CardLookupHandler;
   application?: LocalClearApplication;
   environment?: ConnectorEnvironment;
   allowedOrigins?: readonly string[];
@@ -124,6 +128,14 @@ export interface BuildAppOptions {
 export async function buildApp(
   options: BuildAppOptions,
 ): Promise<FastifyInstance> {
+  if (
+    Boolean(options.cardLookupTokenVerifier) !==
+    Boolean(options.cardLookupService)
+  ) {
+    throw new Error(
+      "The CollectFolio card lookup verifier and service must be configured together",
+    );
+  }
   const app = Fastify({
     logger: options.logger ?? false,
     requestIdHeader: "x-request-id",
@@ -316,6 +328,15 @@ export async function buildApp(
       );
     });
   });
+
+  const cardLookupTokenVerifier = options.cardLookupTokenVerifier;
+  const cardLookupService = options.cardLookupService;
+  if (cardLookupTokenVerifier && cardLookupService) {
+    await app.register(cardLookupHttpPlugin, {
+      tokenVerifier: cardLookupTokenVerifier,
+      service: cardLookupService,
+    });
+  }
 
   await app.register(async (protectedRoutes) => {
     protectedRoutes.addHook(

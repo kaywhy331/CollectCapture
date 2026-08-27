@@ -10,6 +10,9 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.card-lookups.example
+!.env.card-lookups.red-pc.example
+.cloudflared/
 *.log
 *.tsbuildinfo
 .DS_Store
