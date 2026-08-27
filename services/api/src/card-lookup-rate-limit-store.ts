@@ -5,24 +5,22 @@
  * The library itself has no decrement/refund primitive in this version.
  *
  * @fastify/rate-limit calls `store.child(routeOptions)` to derive a
- * separate counter set for each `app.createRateLimit(...)` call (see the
- * per-user 30/hour quota in `card-lookup-http.ts`), and the constructed
- * store instance is never handed back to application code -- only the
- * plugin sees it. `createRefundableRateLimitStore()` closes a fresh `Map`
- * over a dedicated `Store` class and returns both, so the caller (one
- * `buildCardLookupApp` call) can register the class with
- * `@fastify/rate-limit` while keeping a `refund` function that reaches the
- * exact same backing map -- the root store and every `child()` of it all
- * close over this one `Map`, the same way the library's own `LocalStore`
- * keeps a per-registration cache, just shared across `child()` instead of
- * split by it. That sharing is safe only because every caller in this
- * codebase keys its buckets from disjoint namespaces (the global limiter
- * prefixes its socket/`cf-connecting-ip`-derived keys with `ip:`; the
- * per-user quota prefixes its key with `collectfolio-card-lookups:`), so
- * two differently-configured limiters can never collide on the same key --
- * even when the `cf-connecting-ip` value is caller-supplied.
- * Calling the factory fresh per app build also keeps state from leaking
- * between independently built apps (for example, separate test cases).
+ * separate counter set for each route-scoped limit and each
+ * `app.createRateLimit(...)` call (see the per-user 30/hour quota in
+ * `card-lookup-http.ts`), and the constructed store instance is never
+ * handed back to application code -- only the plugin sees it.
+ *
+ * Isolation matches the library exactly: the root store and every
+ * `child()` each own a private map, so two limiters that happen to key on
+ * the same string (the main LocalClear app's global limiter and its
+ * route-scoped limits all key on the raw client IP) can never read or
+ * clobber each other's counters. `createRefundableRateLimitStore()` keeps
+ * a registry of every map its `Store` class creates, and `refund(key)`
+ * decrements the key wherever it is found -- callers only ever refund
+ * namespaced per-user quota keys (`collectfolio-card-lookups:...`), which
+ * exist in exactly one child's map. Calling the factory fresh per app
+ * build keeps state from leaking between independently built apps (for
+ * example, separate test cases).
  */
 
 interface RateLimitEntry {
@@ -73,19 +71,27 @@ export interface RefundableRateLimitStore {
    * `store` registration option. */
   Store: new (options?: unknown) => FastifyCompatibleStore;
   /**
-   * Gives back one previously-charged unit for `key`, floored at zero.
-   * Never extends or resets the window -- a refund only reduces how many
-   * of the window's units are considered spent. A no-op for a key with no
-   * live entry (the window already rolled over, or nothing was ever
-   * charged), which is exactly the "nothing to refund" case.
+   * Gives back one previously-charged unit for `key`, floored at zero, in
+   * every limiter map that currently holds `key`. Never extends or resets
+   * the window -- a refund only reduces how many of the window's units are
+   * considered spent. A no-op for a key with no live entry (the window
+   * already rolled over, or nothing was ever charged), which is exactly
+   * the "nothing to refund" case. Only refund namespaced keys that a
+   * single limiter charges (the per-user quota keys) -- an un-namespaced
+   * key could exist in several limiters' maps and would be refunded in
+   * each.
    */
   refund(key: string): void;
 }
 
 export function createRefundableRateLimitStore(): RefundableRateLimitStore {
-  const entries = new Map<string, RateLimitEntry>();
+  const allEntryMaps = new Set<Map<string, RateLimitEntry>>();
 
-  function touch(key: string, entry: RateLimitEntry): void {
+  function touch(
+    entries: Map<string, RateLimitEntry>,
+    key: string,
+    entry: RateLimitEntry,
+  ): void {
     // Map iteration order is insertion order; deleting and re-setting
     // bumps this key to the most-recently-used end so eviction below
     // drops the actual least-recently-used entry, not an arbitrary one.
@@ -98,6 +104,7 @@ export function createRefundableRateLimitStore(): RefundableRateLimitStore {
   }
 
   class Store {
+    readonly #entries = new Map<string, RateLimitEntry>();
     readonly #continueExceeding: boolean;
     readonly #exponentialBackoff: boolean;
 
@@ -105,6 +112,7 @@ export function createRefundableRateLimitStore(): RefundableRateLimitStore {
       const flags = childFlags(options);
       this.#continueExceeding = flags.continueExceeding;
       this.#exponentialBackoff = flags.exponentialBackoff;
+      allEntryMaps.add(this.#entries);
     }
 
     incr(
@@ -117,7 +125,7 @@ export function createRefundableRateLimitStore(): RefundableRateLimitStore {
       max: number,
     ): void {
       const nowMs = Date.now();
-      let entry = entries.get(key);
+      let entry = this.#entries.get(key);
       if (!entry) {
         entry = { current: 1, ttl: timeWindow, iterationStartMs: nowMs };
       } else if (entry.iterationStartMs + timeWindow <= nowMs) {
@@ -138,7 +146,7 @@ export function createRefundableRateLimitStore(): RefundableRateLimitStore {
           entry.ttl = timeWindow - (nowMs - entry.iterationStartMs);
         }
       }
-      touch(key, entry);
+      touch(this.#entries, key, entry);
       callback(null, { current: entry.current, ttl: entry.ttl });
     }
 
@@ -150,9 +158,10 @@ export function createRefundableRateLimitStore(): RefundableRateLimitStore {
   return {
     Store,
     refund(key: string): void {
-      const entry = entries.get(key);
-      if (!entry) return;
-      entry.current = Math.max(0, entry.current - 1);
+      for (const entries of allEntryMaps) {
+        const entry = entries.get(key);
+        if (entry) entry.current = Math.max(0, entry.current - 1);
+      }
     },
   };
 }
