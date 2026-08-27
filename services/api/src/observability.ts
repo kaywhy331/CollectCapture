@@ -56,6 +56,83 @@ const interventions = meter.createCounter(
   { description: "Publishing jobs paused for a bounded intervention type" },
 );
 
+// Card-lookup domain metrics (G12c). Every `record*` function below is
+// safe to call unconditionally, telemetry initialized or not:
+// @opentelemetry/api's default meter (what `getMeter` returns before any
+// MeterProvider is registered) is a documented no-op, so a histogram
+// `.record()`/counter `.add()` here never throws and never accumulates
+// data until `initializeTelemetry` actually starts one.
+const cardLookupRecognitionDuration = meter.createHistogram(
+  "card_lookup.recognition.duration",
+  { description: "Card recognition provider call duration", unit: "ms" },
+);
+const cardLookupCatalogDuration = meter.createHistogram(
+  "card_lookup.catalog.duration",
+  { description: "Card catalog search duration", unit: "ms" },
+);
+const cardLookupsByOutcome = meter.createCounter("card_lookup.lookups", {
+  description: "Completed card lookups by outcome",
+});
+const cardLookupProviderFailures = meter.createCounter(
+  "card_lookup.recognition.failures",
+  { description: "Card recognition provider failures by G16 classification" },
+);
+const cardLookupRateLimited = meter.createCounter("card_lookup.rate_limited", {
+  description: "Card lookups rejected for exceeding the per-user hourly quota",
+});
+const cardLookupBusy = meter.createCounter("card_lookup.busy", {
+  description:
+    "Card lookups rejected because the vision concurrency gate was full",
+});
+const cardLookupMediaRejected = meter.createCounter(
+  "card_lookup.media_rejected",
+  {
+    description: "Card lookup images rejected by media verification, by reason",
+  },
+);
+
+export function recordCardLookupRecognitionDuration(
+  durationMs: number,
+  provider: string,
+  outcome: string,
+): void {
+  cardLookupRecognitionDuration.record(durationMs, { provider, outcome });
+}
+
+export function recordCardLookupCatalogDuration(
+  durationMs: number,
+  provider: string,
+  outcome: string,
+): void {
+  cardLookupCatalogDuration.record(durationMs, { provider, outcome });
+}
+
+export function recordCardLookupOutcome(
+  outcome: string,
+  provider: string,
+): void {
+  cardLookupsByOutcome.add(1, { outcome, provider });
+}
+
+export function recordCardLookupProviderFailure(
+  provider: string,
+  code: string,
+): void {
+  cardLookupProviderFailures.add(1, { provider, code });
+}
+
+export function recordCardLookupRateLimited(): void {
+  cardLookupRateLimited.add(1);
+}
+
+export function recordCardLookupBusy(): void {
+  cardLookupBusy.add(1);
+}
+
+export function recordCardLookupMediaRejected(reason: string): void {
+  cardLookupMediaRejected.add(1, { reason });
+}
+
 export const REDACTED_LOG_PATHS = [
   "req.headers.authorization",
   "req.headers.cookie",

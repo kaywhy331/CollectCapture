@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1
+
+ARG NODE_VERSION=22.22.0
+
+FROM node:${NODE_VERSION}-bookworm-slim AS build
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=${PNPM_HOME}:${PATH}
+WORKDIR /workspace
+
+RUN corepack enable && corepack prepare pnpm@11.16.0 --activate
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY patches ./patches
+COPY packages/domain/package.json packages/domain/tsconfig.json ./packages/domain/
+COPY packages/device-protocol/package.json packages/device-protocol/tsconfig.json ./packages/device-protocol/
+COPY services/api/package.json services/api/tsconfig.json ./services/api/
+
+RUN pnpm install --frozen-lockfile --filter @localclear/api...
+
+COPY packages/domain/src ./packages/domain/src
+COPY packages/device-protocol/src ./packages/device-protocol/src
+COPY services/api/src ./services/api/src
+
+RUN pnpm --filter @localclear/domain build \
+  && pnpm --filter @localclear/device-protocol build \
+  && pnpm --filter @localclear/api build \
+  && pnpm --filter @localclear/api deploy --prod --legacy /opt/card-lookups
+
+FROM node:${NODE_VERSION}-bookworm-slim AS runtime
+
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=4100
+WORKDIR /app
+
+RUN groupadd --system collectcapture \
+  && useradd --system --gid collectcapture --home-dir /app collectcapture
+
+COPY --from=build --chown=collectcapture:collectcapture /opt/card-lookups ./
+
+USER collectcapture
+EXPOSE 4100
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || '4100') + '/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
+
+CMD ["node", "dist/card-lookup-server.js"]

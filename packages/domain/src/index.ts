@@ -1,5 +1,6 @@
 export * from "./connectors.js";
 export * from "./bundles.js";
+export * from "./card-lookups.js";
 export * from "./clearing.js";
 export * from "./inventory.js";
 export * from "./intelligence.js";

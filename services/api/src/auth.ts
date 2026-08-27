@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { SellerDevice } from "@localclear/domain";
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import {
+  createRemoteJWKSet,
+  errors as joseErrors,
+  jwtVerify,
+  type JWTPayload,
+} from "jose";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Repository } from "./repository.js";
 
@@ -8,6 +13,7 @@ export interface AuthPrincipal {
   userId: string;
   email: string | null;
   roles: string[];
+  authenticationAssuranceLevel?: "aal1" | "aal2" | null;
 }
 
 declare module "fastify" {
@@ -84,7 +90,9 @@ function principalFromPayload(payload: JWTPayload): AuthPrincipal {
           (role): role is string => typeof role === "string",
         )
       : [];
-  return { userId: payload.sub, email, roles };
+  const authenticationAssuranceLevel =
+    payload.aal === "aal1" || payload.aal === "aal2" ? payload.aal : null;
+  return { userId: payload.sub, email, roles, authenticationAssuranceLevel };
 }
 
 export class SharedSecretTokenVerifier implements TokenVerifier {
@@ -128,6 +136,90 @@ export class JwksTokenVerifier implements TokenVerifier {
   }
 }
 
+export interface JwksProbeLogger {
+  info(payload: Record<string, unknown>, message: string): void;
+  warn(payload: Record<string, unknown>, message: string): void;
+}
+
+/**
+ * The precondition a legacy HS256 (symmetric) Supabase project violates --
+ * `jwtVerify` against a JWKS can only ever succeed with an asymmetric
+ * (ES256/RS256) signing key, so an empty or unreachable keyset here is
+ * consistent with that misconfiguration, not just a transient outage.
+ */
+export const JWKS_ASYMMETRIC_SIGNING_PRECONDITION =
+  "CollectFolio's Supabase project must use asymmetric JWT signing keys (ES256/RS256); legacy HS256 projects will fail all verification.";
+
+/**
+ * Fetches the configured JWKS endpoint once, non-fatally (G9): logs the
+ * discovered key count and algorithms at `info`, or a `warn` naming
+ * {@link JWKS_ASYMMETRIC_SIGNING_PRECONDITION} when the endpoint is
+ * unreachable, returns a non-OK status, or its keyset is empty. Never logs
+ * the keys themselves -- only each key's algorithm/key-type metadata.
+ * Intended as a one-shot startup check, not a readiness gate: a failure
+ * here does not prevent the server from starting, since `jwtVerify`
+ * itself will fetch fresh keys (and surface a proper 503) on first use.
+ */
+export async function probeJwksEndpoint(
+  jwksUrl: URL,
+  logger: JwksProbeLogger,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const context = { jwksUrl: jwksUrl.toString() };
+  try {
+    const response = await fetchImpl(jwksUrl);
+    if (!response.ok) {
+      logger.warn(
+        { ...context, status: response.status },
+        `The JWKS endpoint returned HTTP ${response.status} at startup. ${JWKS_ASYMMETRIC_SIGNING_PRECONDITION}`,
+      );
+      return;
+    }
+    const body: unknown = await response.json();
+    const keys =
+      isRecord(body) && Array.isArray(body.keys)
+        ? body.keys.filter(isRecord)
+        : [];
+    if (keys.length === 0) {
+      logger.warn(
+        context,
+        `The JWKS endpoint returned no signing keys at startup. ${JWKS_ASYMMETRIC_SIGNING_PRECONDITION}`,
+      );
+      return;
+    }
+    logger.info(
+      { ...context, keyCount: keys.length, algorithms: keyAlgorithms(keys) },
+      "Fetched the CollectFolio JWKS endpoint at startup",
+    );
+  } catch (error) {
+    logger.warn(
+      {
+        ...context,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      `Could not reach the JWKS endpoint at startup. ${JWKS_ASYMMETRIC_SIGNING_PRECONDITION}`,
+    );
+  }
+}
+
+function keyAlgorithms(keys: Record<string, unknown>[]): string[] {
+  return [
+    ...new Set(
+      keys.map((key) => {
+        if (typeof key.alg === "string" && key.alg) return key.alg;
+        if (key.kty === "EC" && typeof key.crv === "string") {
+          return `EC(${key.crv})`;
+        }
+        return typeof key.kty === "string" && key.kty ? key.kty : "unknown";
+      }),
+    ),
+  ];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export class StaticTokenVerifier implements TokenVerifier {
   constructor(private readonly tokens: ReadonlyMap<string, AuthPrincipal>) {}
 
@@ -136,6 +228,26 @@ export class StaticTokenVerifier implements TokenVerifier {
     if (!principal) throw new Error("Unknown test token");
     return principal;
   }
+}
+
+/**
+ * Distinguishes a JWKS key-retrieval infrastructure failure (the discovery
+ * endpoint is unreachable, timed out, or returned a bad response) from an
+ * actual token problem (bad signature, expired, wrong issuer/audience, no
+ * matching key). jose throws the base {@link joseErrors.JOSEError} directly
+ * only for the two JWKS-fetch failures below it does not have a dedicated
+ * subclass for; every token-validation failure uses a specific subclass
+ * instead, so checking the exact constructor keeps those told apart. A raw
+ * `TypeError` (Node's fetch throws `TypeError: fetch failed` for DNS/connect
+ * failures) never comes from token validation either.
+ */
+function isAuthenticationInfrastructureFailure(error: unknown): boolean {
+  if (error instanceof joseErrors.JWKSTimeout) return true;
+  if (error instanceof TypeError) return true;
+  return (
+    error instanceof joseErrors.JOSEError &&
+    error.constructor === joseErrors.JOSEError
+  );
 }
 
 export function createAuthenticationHook(verifier: TokenVerifier) {
@@ -156,7 +268,15 @@ export function createAuthenticationHook(verifier: TokenVerifier) {
       request.principal = await verifier.verify(
         authorization.slice("Bearer ".length),
       );
-    } catch {
+    } catch (error) {
+      if (isAuthenticationInfrastructureFailure(error)) {
+        await reply.code(503).header("retry-after", "30").send({
+          error: "authentication_unavailable",
+          message:
+            "CollectCapture could not reach the sign-in service. Please try again shortly.",
+        });
+        return;
+      }
       await reply.code(401).send({
         error: "unauthorized",
         message: "The bearer token is invalid or expired",

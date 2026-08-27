@@ -21,7 +21,8 @@ export const supabase = createClient(
       storage: isServerRendering ? serverStorage : AsyncStorage,
       autoRefreshToken: !isServerRendering,
       persistSession: !isServerRendering,
-      detectSessionInUrl: Platform.OS === "web" && !isServerRendering,
+      detectSessionInUrl: false,
+      flowType: "pkce",
     },
   },
 );

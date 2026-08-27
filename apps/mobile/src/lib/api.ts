@@ -65,13 +65,6 @@ export interface CaptureInput {
     mediaType: "image/jpeg" | "image/png" | "image/webp";
     source: "camera" | "library" | "import";
     qualityIssues: string[];
-    redactionState:
-      | "not_needed"
-      | "suggested"
-      | "reviewed_not_needed"
-      | "approved"
-      | "applied";
-    exifLocationStripped: boolean;
   }>;
   barcode?: string | null;
   imageFingerprint?: string | null;

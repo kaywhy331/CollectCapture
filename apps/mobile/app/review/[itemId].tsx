@@ -188,8 +188,6 @@ export default function ReviewItemScreen() {
         exchangeOptions: activeHousehold.exchangePreferences,
         paymentWording: activeHousehold.paymentWording,
         negotiationRules: activeHousehold.priceRules,
-        restrictedItemStatus: restrictedScreen.status,
-        restrictedItemReasons: restrictedScreen.reasons,
         itemReview: {
           identification: suggestion.identification,
           category,
@@ -234,6 +232,7 @@ export default function ReviewItemScreen() {
     if (picked.canceled || !picked.assets[0]) return;
     setPrivacyBusyId(mediaAssetId);
     let uploaded: Awaited<ReturnType<typeof sanitizeAndUploadPhotos>> = [];
+    let persisted = false;
     try {
       const asset = picked.assets[0];
       uploaded = await sanitizeAndUploadPhotos(activeHousehold.id, [
@@ -252,13 +251,14 @@ export default function ReviewItemScreen() {
         mediaAssetId,
         replacement,
       );
+      persisted = true;
       await queryClient.invalidateQueries({
         queryKey: ["item", activeHousehold.id, itemId],
       });
       enrichment.reset();
       enrichment.mutate();
     } catch (caught) {
-      if (uploaded.length > 0) {
+      if (!persisted && uploaded.length > 0) {
         await removeUploadedPhotos(uploaded.map((asset) => asset.storagePath));
       }
       setPrivacyError(

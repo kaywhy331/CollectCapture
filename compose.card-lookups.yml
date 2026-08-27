@@ -1,0 +1,30 @@
+name: collectcapture-card-lookups
+
+services:
+  card-lookups:
+    image: collectcapture-card-lookups:local
+    build:
+      context: .
+      dockerfile: Dockerfile.card-lookups
+    env_file:
+      - .env.card-lookups.red-pc
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4100
+      CARD_RECOGNITION_PROVIDER: ${CARD_RECOGNITION_PROVIDER:-groq}
+      GROQ_MODEL: ${GROQ_MODEL:-qwen/qwen3.6-27b}
+      GROQ_TIMEOUT_MS: ${GROQ_TIMEOUT_MS:-60000}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-https://ollama.com}
+      OLLAMA_MODEL: ${OLLAMA_CLOUD_MODEL:-qwen3.5:397b}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-120000}
+    ports:
+      - "${COLLECTCAPTURE_BIND_ADDRESS:-127.0.0.1}:${COLLECTCAPTURE_PORT:-4100}:4100"
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

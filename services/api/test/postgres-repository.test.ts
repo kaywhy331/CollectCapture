@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ItemEnrichmentOutput } from "@localclear/domain";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import type { FastifyInstance } from "fastify";
@@ -45,6 +46,30 @@ integrationDescribe.sequential("PostgresRepository integration", () => {
     application = new LocalClearApplication(repository, {
       environment: "internal",
       apiBaseUrl: "https://api.example.test",
+      intelligenceProvider: {
+        providerName: "postgres-test-provider",
+        model: "deterministic-v1",
+        async enrich(request) {
+          const mediaAssetId = request.media[0]?.mediaAssetId;
+          if (!mediaAssetId) throw new Error("Test item has no media");
+          return enrichmentOutput(mediaAssetId);
+        },
+      },
+      mediaReadUrlProvider: {
+        async createReadUrl(storagePath) {
+          return `https://media.example.test/${encodeURIComponent(storagePath)}`;
+        },
+      },
+      mediaVerificationProvider: {
+        async verify(request) {
+          return {
+            contentSha256: request.expectedSha256,
+            mediaType: request.declaredMediaType,
+            exifLocationStripped: true,
+            sizeBytes: 1_024,
+          };
+        },
+      },
       accountDeletionHashKey: "integration-test-hash-key-32-bytes-minimum",
       accountIdentityProvider: {
         async deleteUser(id) {
@@ -139,8 +164,6 @@ integrationDescribe.sequential("PostgresRepository integration", () => {
               mediaType: "image/jpeg",
               source: "camera",
               qualityIssues: [],
-              redactionState: "not_needed",
-              exifLocationStripped: true,
             },
           ],
           barcode: null,
@@ -149,6 +172,26 @@ integrationDescribe.sequential("PostgresRepository integration", () => {
       });
       expect(capture.statusCode).toBe(201);
       const itemId = capture.json().item.id as string;
+
+      const enrichment = await app.inject({
+        method: "POST",
+        url: `/v1/households/${householdId}/items/${itemId}/enrich`,
+        headers,
+      });
+      expect(enrichment.statusCode, JSON.stringify(enrichment.json())).toBe(
+        201,
+      );
+
+      const scannedItem = await app.inject({
+        method: "GET",
+        url: `/v1/households/${householdId}/items/${itemId}`,
+        headers,
+      });
+      expect(scannedItem.json().item.media[0]).toMatchObject({
+        storagePath: mediaPath,
+        redactionState: "not_needed",
+        exifLocationStripped: true,
+      });
 
       const listing = await app.inject({
         method: "POST",
@@ -181,8 +224,6 @@ integrationDescribe.sequential("PostgresRepository integration", () => {
             defaultHoldMinutes: 120,
             acceptsTrades: false,
           },
-          restrictedItemStatus: "clear",
-          restrictedItemReasons: [],
           approve: true,
         },
       });
@@ -300,3 +341,61 @@ integrationDescribe.sequential("PostgresRepository integration", () => {
     integrationTestTimeoutMs,
   );
 });
+
+function enrichmentOutput(mediaAssetId: string): ItemEnrichmentOutput {
+  const evidence = [{ mediaAssetId, observation: "Visible item surface" }];
+  return {
+    identification: {
+      itemType: "Side table",
+      category: "Furniture",
+      brand: null,
+      model: null,
+      confidence: 0.8,
+      alternatives: [],
+      extractedText: [],
+      barcodes: [],
+    },
+    title: {
+      value: "Oak side table",
+      confidence: 0.8,
+      provenance: "image_derived",
+      evidence,
+    },
+    category: {
+      value: "Furniture",
+      confidence: 0.9,
+      provenance: "image_derived",
+      evidence,
+    },
+    brand: { value: null, confidence: 0, provenance: "inferred", evidence: [] },
+    model: { value: null, confidence: 0, provenance: "inferred", evidence: [] },
+    condition: { value: "good", confidence: 0.8, evidence },
+    dimensions: [],
+    specifications: [],
+    accessories: [],
+    defects: [],
+    mediaAssessments: [
+      {
+        mediaAssetId,
+        qualityIssues: [],
+        redactionSuggested: false,
+        redactionReasons: [],
+        leadPhotoScore: 0.9,
+        leadPhotoReasons: ["Complete item view"],
+      },
+    ],
+    suggestedAdditionalPhotos: [],
+    listingDraft: {
+      title: "Oak side table",
+      description: "Oak side table in good used condition.",
+      conditionSummary: "Good used condition.",
+    },
+    clearingRecommendation: {
+      value: "sell",
+      confidence: 0.8,
+      rationale: "The item appears usable and suitable for local sale.",
+    },
+    restrictedSignals: [],
+    unresolvedQuestions: [],
+  };
+}

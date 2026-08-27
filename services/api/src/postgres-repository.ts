@@ -731,25 +731,33 @@ export class PostgresRepository implements Repository {
   }
 
   async saveItem(item: StoredItem): Promise<StoredItem> {
-    const rows = await this.#sql<Row[]>`
-      update public.items set
-        title = ${item.title}, category = ${item.category}, brand = ${item.brand},
-        model = ${item.model}, condition = ${item.condition},
-        dimensions = ${this.#sql.json(item.dimensions)},
-        specifications = ${this.#sql.json(item.specifications)},
-        accessories = ${this.#sql.array(item.accessories)},
-        defects = ${this.#sql.array(item.defects)},
-        storage_location = ${item.storageLocation},
-        identification = ${this.#sql.json(item.identification)},
-        identification_confidence = ${item.identification.confidence},
-        clearing_recommendation = ${item.clearingRecommendation},
-        status = ${item.status}, image_fingerprint = ${item.imageFingerprint},
-        barcode = ${item.barcode}, updated_at = ${item.updatedAt}
-      where household_id = ${item.householdId}::uuid and id = ${item.id}::uuid
-      returning id
-    `;
-    if (rows.length !== 1) throw new Error("Item not found");
-    return item;
+    await this.#sql.begin(async (sql) => {
+      const rows = await sql<Row[]>`
+        update public.items set
+          title = ${item.title}, category = ${item.category}, brand = ${item.brand},
+          model = ${item.model}, condition = ${item.condition},
+          dimensions = ${sql.json(item.dimensions)},
+          specifications = ${sql.json(item.specifications)},
+          accessories = ${sql.array(item.accessories)},
+          defects = ${sql.array(item.defects)},
+          storage_location = ${item.storageLocation},
+          identification = ${sql.json(item.identification)},
+          identification_confidence = ${item.identification.confidence},
+          clearing_recommendation = ${item.clearingRecommendation},
+          status = ${item.status}, image_fingerprint = ${item.imageFingerprint},
+          barcode = ${item.barcode}, updated_at = ${item.updatedAt}
+        where household_id = ${item.householdId}::uuid and id = ${item.id}::uuid
+        returning id
+      `;
+      if (rows.length !== 1) throw new Error("Item not found");
+      await sql`
+        delete from public.media_assets
+        where household_id = ${item.householdId}::uuid
+          and item_id = ${item.id}::uuid
+      `;
+      await insertMediaAssets(sql, item);
+    });
+    return structuredClone(item);
   }
 
   async getItem(
@@ -817,11 +825,12 @@ export class PostgresRepository implements Repository {
   ): Promise<ItemEnrichment> {
     const rows = await this.#sql<Row[]>`
       insert into public.item_enrichments (
-        id, household_id, item_id, input_fingerprint, provider, model,
+        id, household_id, item_id, input_fingerprint, media_fingerprint, provider, model,
         output, created_at
       ) values (
         ${enrichment.id}::uuid, ${enrichment.householdId}::uuid,
         ${enrichment.itemId}::uuid, ${enrichment.inputFingerprint},
+        ${enrichment.mediaFingerprint},
         ${enrichment.provider}, ${enrichment.model},
         ${this.#sql.json(enrichment.output)}, ${enrichment.createdAt}
       ) on conflict (item_id, input_fingerprint, provider, model)
@@ -862,12 +871,22 @@ export class PostgresRepository implements Repository {
   async getLatestItemEnrichment(
     householdId: string,
     itemId: string,
+    mediaFingerprint?: string,
   ): Promise<ItemEnrichment | null> {
-    const [row] = await this.#sql<Row[]>`
-      select * from public.item_enrichments
-      where household_id = ${householdId}::uuid and item_id = ${itemId}::uuid
-      order by created_at desc limit 1
-    `;
+    const rows = mediaFingerprint
+      ? await this.#sql<Row[]>`
+          select * from public.item_enrichments
+          where household_id = ${householdId}::uuid
+            and item_id = ${itemId}::uuid
+            and media_fingerprint = ${mediaFingerprint}
+          order by created_at desc, id desc limit 1
+        `
+      : await this.#sql<Row[]>`
+          select * from public.item_enrichments
+          where household_id = ${householdId}::uuid and item_id = ${itemId}::uuid
+          order by created_at desc, id desc limit 1
+        `;
+    const [row] = rows;
     return row ? mapItemEnrichment(row) : null;
   }
 
@@ -1975,6 +1994,13 @@ async function insertItem(
       ${item.imageFingerprint}, ${item.barcode}, ${item.createdAt}, ${item.updatedAt}
     )
   `;
+  await insertMediaAssets(sql, item);
+}
+
+async function insertMediaAssets(
+  sql: postgres.TransactionSql,
+  item: StoredItem,
+): Promise<void> {
   for (const asset of item.media) {
     await sql`
       insert into public.media_assets (
@@ -2200,6 +2226,7 @@ function mapItemEnrichment(row: Row): ItemEnrichment {
     householdId: String(row.household_id),
     itemId: String(row.item_id),
     inputFingerprint: row.input_fingerprint,
+    mediaFingerprint: row.media_fingerprint,
     provider: row.provider,
     model: row.model,
     output: row.output,

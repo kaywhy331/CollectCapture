@@ -73,16 +73,6 @@ export const CapturedPhotoInputSchema = z
     mediaType: z.enum(["image/jpeg", "image/png", "image/webp"]),
     source: z.enum(["camera", "library", "import"]),
     qualityIssues: z.array(MediaQualityIssueSchema).default([]),
-    redactionState: z
-      .enum([
-        "not_needed",
-        "suggested",
-        "reviewed_not_needed",
-        "approved",
-        "applied",
-      ])
-      .default("not_needed"),
-    exifLocationStripped: z.boolean().default(false),
   })
   .strict();
 
@@ -178,8 +168,6 @@ export const CreateListingRequestSchema = z
     exchangeOptions: z.array(ExchangeOptionSchema).min(1),
     paymentWording: PaymentWordingSchema,
     negotiationRules: PriceRuleSchema,
-    restrictedItemStatus: z.enum(["clear", "review", "blocked"]),
-    restrictedItemReasons: z.array(z.string().trim().min(1).max(500)),
     itemReview: z
       .object({
         identification: IdentificationSchema,

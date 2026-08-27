@@ -1,0 +1,21 @@
+services:
+  card-lookups:
+    environment:
+      TRUSTED_PROXY_MODE: cloudflare-tunnel
+
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2026.8.2}
+    command:
+      - tunnel
+      - run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env.card-lookups.red-pc}
+    depends_on:
+      - card-lookups
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

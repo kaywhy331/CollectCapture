@@ -18,6 +18,10 @@ import type {
   IntelligenceProvider,
   MediaReadUrlProvider,
 } from "../src/intelligence.js";
+import {
+  MediaVerificationError,
+  type MediaVerificationProvider,
+} from "../src/media-verification.js";
 import { MemoryRepository } from "../src/memory-repository.js";
 import { NotificationDispatcher } from "../src/notification-dispatcher.js";
 import { PublishingDispatcher } from "../src/publishing-dispatcher.js";
@@ -57,15 +61,37 @@ describe("LocalClear API", () => {
       model: "deterministic-v1",
       async enrich(request) {
         intelligenceCalls += 1;
-        const mediaAssetId = request.media[0]?.mediaAssetId;
-        if (!mediaAssetId) throw new Error("Test item has no media");
-        return enrichmentOutput(mediaAssetId);
+        const mediaAssetIds = request.media.map((media) => media.mediaAssetId);
+        if (mediaAssetIds.length === 0)
+          throw new Error("Test item has no media");
+        return enrichmentOutput(
+          mediaAssetIds,
+          request.media.some((media) =>
+            decodeURIComponent(media.readUrl).endsWith("/item-4.jpg"),
+          ),
+        );
       },
     };
     const mediaReadUrlProvider: MediaReadUrlProvider = {
       async createReadUrl(storagePath) {
         signedMediaPaths.push(storagePath);
         return `https://media.example.test/signed/${encodeURIComponent(storagePath)}`;
+      },
+    };
+    const mediaVerificationProvider: MediaVerificationProvider = {
+      async verify(request) {
+        if (request.storagePath.includes("gps-item")) {
+          throw new MediaVerificationError(
+            "media_location_present",
+            "Uploaded media still contains GPS location metadata",
+          );
+        }
+        return {
+          contentSha256: request.expectedSha256,
+          mediaType: request.declaredMediaType,
+          exifLocationStripped: true,
+          sizeBytes: 1_024,
+        };
       },
     };
     const serverSigningKeys = generateKeyPairSync("ec", {
@@ -123,6 +149,7 @@ describe("LocalClear API", () => {
         createId: () => `id-${++idCounter}`,
         intelligenceProvider,
         mediaReadUrlProvider,
+        mediaVerificationProvider,
         deviceCommandFactory: new SignedDeviceCommandFactory({
           keyId: "backend-test-key",
           privateKey: serverSigningKeys.privateKey
@@ -910,30 +937,80 @@ describe("LocalClear API", () => {
     expect(response.json()).toMatchObject({ error: "connector_blocked" });
   });
 
-  it("blocks external publishing until EXIF location is stripped", async () => {
+  it("rejects uploaded media when server inspection finds GPS metadata", async () => {
     const householdId = await createHousehold(app);
-    const captured = await captureItem(app, householdId, {
-      ...capturePayload(householdId, 1),
-      photos: [
-        {
-          ...capturePayload(householdId, 1).photos[0],
-          exifLocationStripped: false,
-        },
-      ],
-    });
-    const listing = await createApprovedListing(app, householdId, captured.id);
     const response = await app.inject({
+      method: "POST",
+      url: `/v1/households/${householdId}/items`,
+      headers: aliceHeaders,
+      payload: {
+        ...capturePayload(householdId, 1),
+        photos: [
+          {
+            ...capturePayload(householdId, 1).photos[0],
+            storagePath: `${householdId}/uploads/gps-item.jpg`,
+          },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ error: "media_location_present" });
+  });
+
+  it("derives restricted-item state server-side and rejects client clearance", async () => {
+    const householdId = await createHousehold(app);
+    const captured = await captureItem(
+      app,
+      householdId,
+      capturePayload(householdId, 1),
+    );
+    const enrichment = await app.inject({
+      method: "POST",
+      url: `/v1/households/${householdId}/items/${captured.id}/enrich`,
+      headers: aliceHeaders,
+    });
+    expect(enrichment.statusCode).toBe(201);
+
+    const spoofed = await app.inject({
+      method: "POST",
+      url: `/v1/households/${householdId}/items/${captured.id}/listings`,
+      headers: aliceHeaders,
+      payload: {
+        ...listingPayload(),
+        title: "Pair of collectible handguns",
+        restrictedItemStatus: "clear",
+        restrictedItemReasons: [],
+      },
+    });
+    expect(spoofed.statusCode).toBe(400);
+
+    const listing = await app.inject({
+      method: "POST",
+      url: `/v1/households/${householdId}/items/${captured.id}/listings`,
+      headers: aliceHeaders,
+      payload: {
+        ...listingPayload(),
+        title: "Pair of collectible handguns",
+      },
+    });
+    expect(listing.statusCode).toBe(201);
+    expect(listing.json().listing).toMatchObject({
+      restrictedItemStatus: "blocked",
+      restrictedItemReasons: ["Possible firearm"],
+    });
+
+    const publish = await app.inject({
       method: "POST",
       url: `/v1/households/${householdId}/items/${captured.id}/publish`,
       headers: aliceHeaders,
       payload: {
         platforms: ["Sandbox Local API"],
-        listingVersion: listing.version,
+        listingVersion: listing.json().listing.version,
         sellerDeviceId: null,
       },
     });
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toMatchObject({ error: "media_not_sanitized" });
+    expect(publish.statusCode).toBe(409);
+    expect(publish.json()).toMatchObject({ error: "item_blocked" });
   });
 
   it("isolates household records from another authenticated user", async () => {
@@ -1307,6 +1384,42 @@ describe("LocalClear API", () => {
     ).toBe(1);
   });
 
+  it("keeps a scan current when lead-photo scoring reorders media", async () => {
+    const householdId = await createHousehold(app);
+    const firstPhoto = capturePayload(householdId, 1).photos[0];
+    const secondPhoto = capturePayload(householdId, 2).photos[0];
+    const captured = await captureItem(app, householdId, {
+      ...capturePayload(householdId, 1),
+      photos: [firstPhoto, secondPhoto],
+    });
+    const url = `/v1/households/${householdId}/items/${captured.id}/enrich`;
+
+    const first = await app.inject({
+      method: "POST",
+      url,
+      headers: aliceHeaders,
+    });
+    expect(first.statusCode).toBe(201);
+    const second = await app.inject({
+      method: "POST",
+      url,
+      headers: aliceHeaders,
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ reused: true });
+    expect(intelligenceCalls).toBe(1);
+
+    const item = await app.inject({
+      method: "GET",
+      url: `/v1/households/${householdId}/items/${captured.id}`,
+      headers: aliceHeaders,
+    });
+    expect(item.json().item.media[0]).toMatchObject({
+      storagePath: secondPhoto.storagePath,
+      isLead: true,
+    });
+  });
+
   it("enriches sanitized photos once, validates evidence, and reuses the result", async () => {
     const householdId = await createHousehold(app);
     const captured = await captureItem(
@@ -1391,8 +1504,6 @@ describe("LocalClear API", () => {
           mediaType: "image/jpeg",
           source: "library",
           qualityIssues: [],
-          redactionState: "not_needed",
-          exifLocationStripped: true,
         },
         confirmPrivateDetailsRemoved: true,
       },
@@ -1400,10 +1511,35 @@ describe("LocalClear API", () => {
     expect(replacement.statusCode).toBe(200);
     expect(replacement.json().item.media[0]).toMatchObject({
       storagePath: replacementPath,
-      redactionState: "applied",
+      redactionState: "pending_scan",
       exifLocationStripped: true,
     });
     expect(deletedMediaPaths).toEqual([`${householdId}/uploads/item-4.jpg`]);
+
+    const stalePublish = await app.inject({
+      method: "POST",
+      url: `/v1/households/${householdId}/items/${captured.id}/publish`,
+      headers: aliceHeaders,
+      payload: {
+        platforms: ["Sandbox Local API"],
+        listingVersion: listing.version,
+        sellerDeviceId: null,
+      },
+    });
+    expect(stalePublish.statusCode).toBe(409);
+    expect(stalePublish.json()).toMatchObject({
+      error: "item_screening_required",
+    });
+
+    const rescanned = await app.inject({
+      method: "POST",
+      url: `/v1/households/${householdId}/items/${captured.id}/enrich`,
+      headers: aliceHeaders,
+    });
+    expect(rescanned.statusCode).toBe(201);
+    expect(rescanned.json().enrichment.mediaFingerprint).not.toBe(
+      first.json().enrichment.mediaFingerprint,
+    );
 
     const publishAfterRedaction = await app.inject({
       method: "POST",
@@ -1415,7 +1551,10 @@ describe("LocalClear API", () => {
         sellerDeviceId: null,
       },
     });
-    expect(publishAfterRedaction.statusCode).toBe(202);
+    expect(
+      publishAfterRedaction.statusCode,
+      JSON.stringify(publishAfterRedaction.json()),
+    ).toBe(202);
 
     const forbidden = await app.inject({
       method: "GET",
@@ -1476,8 +1615,6 @@ function capturePayload(householdId: string, index: number) {
         mediaType: "image/jpeg",
         source: "camera",
         qualityIssues: [],
-        redactionState: "not_needed",
-        exifLocationStripped: true,
       },
     ],
     barcode: null,
@@ -1505,43 +1642,55 @@ async function createApprovedListing(
   householdId: string,
   itemId: string,
 ) {
+  const enrichment = await app.inject({
+    method: "POST",
+    url: `/v1/households/${householdId}/items/${itemId}/enrich`,
+    headers: aliceHeaders,
+  });
+  expect([200, 201]).toContain(enrichment.statusCode);
   const response = await app.inject({
     method: "POST",
     url: `/v1/households/${householdId}/items/${itemId}/listings`,
     headers: aliceHeaders,
-    payload: {
-      title: "Solid oak side table",
-      description:
-        "Solid oak side table with a small scratch shown clearly in the photos.",
-      conditionSummary: "Good used condition with one small cosmetic scratch.",
-      specifications: {
-        material: { value: "oak", provenance: "user_confirmed", confidence: 1 },
-      },
-      priceStrategy: "balanced",
-      askingPrice: { amountCents: 5_500, currency: "USD" },
-      minimumPrice: { amountCents: 4_000, currency: "USD" },
-      location: {
-        zipCode: "94107",
-        displayArea: "Potrero Hill",
-        radiusMiles: 15,
-      },
-      exchangeOptions: ["public_meetup"],
-      paymentWording: "cash_preferred",
-      negotiationRules: {
-        defaultMinimumOfferPercent: 70,
-        defaultHoldMinutes: 120,
-        acceptsTrades: false,
-      },
-      restrictedItemStatus: "clear",
-      restrictedItemReasons: [],
-      approve: true,
-    },
+    payload: listingPayload(),
   });
   expect(response.statusCode).toBe(201);
   return response.json().listing as { id: string; version: number };
 }
 
-function enrichmentOutput(mediaAssetId: string): ItemEnrichmentOutput {
+function listingPayload() {
+  return {
+    title: "Solid oak side table",
+    description:
+      "Solid oak side table with a small scratch shown clearly in the photos.",
+    conditionSummary: "Good used condition with one small cosmetic scratch.",
+    specifications: {
+      material: { value: "oak", provenance: "user_confirmed", confidence: 1 },
+    },
+    priceStrategy: "balanced",
+    askingPrice: { amountCents: 5_500, currency: "USD" },
+    minimumPrice: { amountCents: 4_000, currency: "USD" },
+    location: {
+      zipCode: "94107",
+      displayArea: "Potrero Hill",
+      radiusMiles: 15,
+    },
+    exchangeOptions: ["public_meetup"],
+    paymentWording: "cash_preferred",
+    negotiationRules: {
+      defaultMinimumOfferPercent: 70,
+      defaultHoldMinutes: 120,
+      acceptsTrades: false,
+    },
+    approve: true,
+  };
+}
+
+function enrichmentOutput(
+  mediaAssetIds: readonly string[],
+  privacyIssue = false,
+): ItemEnrichmentOutput {
+  const mediaAssetId = mediaAssetIds[0]!;
   const evidence = [
     { mediaAssetId, observation: "A small wood table is visible" },
   ];
@@ -1597,16 +1746,18 @@ function enrichmentOutput(mediaAssetId: string): ItemEnrichmentOutput {
         ],
       },
     ],
-    mediaAssessments: [
-      {
-        mediaAssetId,
-        qualityIssues: ["glare", "possible_address"],
-        redactionSuggested: true,
-        redactionReasons: ["A possible street address is visible"],
-        leadPhotoScore: 0.9,
-        leadPhotoReasons: ["Sharp complete view of the item"],
-      },
-    ],
+    mediaAssessments: mediaAssetIds.map((assessmentMediaAssetId, index) => ({
+      mediaAssetId: assessmentMediaAssetId,
+      qualityIssues:
+        privacyIssue && index === 0 ? ["glare", "possible_address"] : [],
+      redactionSuggested: privacyIssue && index === 0,
+      redactionReasons:
+        privacyIssue && index === 0
+          ? ["A possible street address is visible"]
+          : [],
+      leadPhotoScore: 0.9 + index / 1_000,
+      leadPhotoReasons: ["Sharp complete view of the item"],
+    })),
     suggestedAdditionalPhotos: [
       {
         kind: "label",

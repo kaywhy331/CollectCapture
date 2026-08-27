@@ -286,6 +286,7 @@ export interface Repository {
   getLatestItemEnrichment(
     householdId: string,
     itemId: string,
+    mediaFingerprint?: string,
   ): Promise<ItemEnrichment | null>;
 
   createListing(
