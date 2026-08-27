@@ -64,6 +64,7 @@ import {
 import { ApplicationError } from "./errors.js";
 import type { CardLookupHandler } from "./card-lookups.js";
 import { cardLookupHttpPlugin } from "./card-lookup-http.js";
+import { createRefundableRateLimitStore } from "./card-lookup-rate-limit-store.js";
 import { registerHttpObservability } from "./observability.js";
 import type { Repository } from "./repository.js";
 
@@ -162,14 +163,28 @@ export async function buildApp(
       }
     },
   });
+  // A refundable store (G7) so the card-lookup mount below can give back a
+  // per-user quota unit for a lookup that failed server-side. Every
+  // limiter (global and route-scoped) gets its own isolated map, matching
+  // the library's LocalStore semantics.
+  const rateLimitStore = createRefundableRateLimitStore();
   await app.register(rateLimit, {
     global: true,
     max: 120,
     timeWindow: "1 minute",
-    errorResponseBuilder: () => ({
-      error: "rate_limited",
-      message: "Too many requests. Please try again shortly.",
-    }),
+    store: rateLimitStore.Store,
+    // Must return an `ApplicationError` (not a plain object) so the error
+    // handler below recognizes it and replies `429`/`rate_limited` instead
+    // of falling through to its generic `500` branch, which has no
+    // `statusCode` to key off of (G26). The library already stamped the
+    // standard `x-ratelimit-*`/`retry-after` headers onto `reply` before
+    // calling this builder.
+    errorResponseBuilder: (_request, context) =>
+      new ApplicationError(
+        context.statusCode,
+        "rate_limited",
+        "Too many requests. Please try again shortly.",
+      ),
   });
   await app.register(swagger, {
     openapi: {
@@ -335,6 +350,7 @@ export async function buildApp(
     await app.register(cardLookupHttpPlugin, {
       tokenVerifier: cardLookupTokenVerifier,
       service: cardLookupService,
+      refundQuota: rateLimitStore.refund,
     });
   }
 
