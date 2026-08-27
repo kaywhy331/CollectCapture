@@ -15,6 +15,26 @@ describe("card lookup contracts", () => {
     ).toMatchObject({ category: "all", limit: 12, query: "" });
   });
 
+  it("accepts a text-only refinement without an image", () => {
+    const parsed = CardLookupRequestSchema.parse({ query: "Charizard 4/102" });
+    expect(parsed.imageDataUrl).toBeUndefined();
+    expect(parsed).toMatchObject({ query: "Charizard 4/102" });
+  });
+
+  it("rejects a request with neither an image nor a query", () => {
+    expect(() => CardLookupRequestSchema.parse({})).toThrow();
+    expect(() => CardLookupRequestSchema.parse({ query: "   " })).toThrow();
+  });
+
+  it("allows a null content hash only alongside the non-retention pledge", () => {
+    expect(
+      CardLookupResultSchema.shape.contentSha256.safeParse(null).success,
+    ).toBe(true);
+    expect(
+      CardLookupResultSchema.shape.contentSha256.safeParse("not-hex").success,
+    ).toBe(false);
+  });
+
   it("rejects remote image URLs and unsupported image media", () => {
     expect(() =>
       CardLookupRequestSchema.parse({

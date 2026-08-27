@@ -44,14 +44,16 @@ The endpoint requires `Authorization: Bearer <CollectFolio Supabase JWT>`, accep
 
 The decoded JPEG, PNG, or WebP must be at most 2 MiB and its declared type must match its bytes. The service computes the content SHA-256 before recognition. When `query` is empty, the configured OpenAI, Ollama, or Groq model produces conservative structured visible-text evidence; when it is present, provider recognition is skipped and the query becomes the evidence. Each bounded query is sent to the private CollectFolio `catalog/search` endpoint with the same bearer token.
 
-An optional minimum-resolution gate can reject an image whose shortest side (parsed from its PNG/JPEG/WebP container header, never by decoding pixels) falls below a configured pixel minimum, responding `422 media_resolution_too_low` with a message asking the collector to retake the photo larger or closer to the card. It is **disabled by default** (`CARD_IMAGE_MIN_DIMENSION=0`); see [the deployment runbook](deploy-card-lookups.md) for the env var. A 200 px minimum is proposed but **not yet enabled** -- turning it on is pending CollectFolio-lane acknowledgment and a matching client-side pre-check (rejecting an obviously-too-small capture before upload, rather than relying solely on this server-side backstop).
+`imageDataUrl` is **optional when `query` is non-empty** (agreed with the CollectFolio integration 2026-08-26): a text-only refinement does not have to re-upload the crop it is correcting, and its response carries `contentSha256: null` because no image was submitted. A vision lookup -- an empty `query` -- always requires the image, and a request with neither is rejected as invalid. Text-only refinements still consume a quota unit (the catalog search still runs) and are never gated by the vision concurrency limit. CollectFolio plans to adopt this shape together with its category-on-correction fix, sending the selected candidate's game instead of `"all"` so a refinement keeps its catalog filter.
+
+An optional minimum-resolution gate can reject an image whose shortest side (parsed from its PNG/JPEG/WebP container header, never by decoding pixels) falls below a configured pixel minimum, responding `422 media_resolution_too_low` with a message asking the collector to retake the photo larger or closer to the card. It is **disabled by default** (`CARD_IMAGE_MIN_DIMENSION=0`); see [the deployment runbook](deploy-card-lookups.md) for the env var. A 200 px minimum is **agreed in principle with the CollectFolio integration (2026-08-26) but stays disabled** until its client-side pre-check ships: crops of small in-frame cards can legitimately land under 200 px, and the collector should see a "retake closer" prompt from the client, not a 422 from this backstop. CollectFolio will signal when the pre-check is live.
 
 The response is cache-disabled and has this shape:
 
 ```json
 {
   "lookup": {
-    "contentSha256": "<64 lowercase hex characters>",
+    "contentSha256": "<64 lowercase hex characters, or null for a text-only refinement>",
     "imageRetained": false,
     "recognition": {},
     "candidates": [],
@@ -64,7 +66,7 @@ Candidates contain identity metadata and an exact TCGCSV `(categoryId, groupId, 
 
 ## Recognition provider error codes
 
-A recognition-provider failure always responds `502` with `{"error": "<code>", "message": "..."}`. Today's generic `card_recognition_failed` remains the fallback for a failure that does not fit one of the more specific codes below. The specific codes are **additive and pending CollectFolio-lane acknowledgment** -- until CollectFolio's client reads them, treat any `502` from this route the way it already does.
+A recognition-provider failure always responds `502` with `{"error": "<code>", "message": "..."}`. Today's generic `card_recognition_failed` remains the fallback for a failure that does not fit one of the more specific codes below. The specific codes are additive and **acknowledged by the CollectFolio integration (2026-08-26)**; until its client-side copy mapping ships, any `502` from this route falls through to CollectFolio's generic retry copy, which is safe. CollectFolio has also confirmed it will not show re-sign-in guidance for `503 authentication_unavailable`.
 
 | Code                              | Meaning                                                                                                                    | CollectFolio guidance                                                                   |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |

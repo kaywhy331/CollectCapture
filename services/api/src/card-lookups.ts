@@ -847,18 +847,28 @@ export class StatelessCardLookupService implements CardLookupHandler {
     },
   ): Promise<CardLookupResult> {
     if (context.signal?.aborted) throw new ClientDisconnectedError();
-    const image = verifiedCardImage(
-      request.imageDataUrl,
-      this.#minCardImageDimension,
-    );
+    // A text-only refinement (non-empty query, schema-guaranteed) may omit
+    // the image so a correction does not re-upload the crop it refines; a
+    // vision lookup always carries one.
+    const image = request.imageDataUrl
+      ? verifiedCardImage(request.imageDataUrl, this.#minCardImageDimension)
+      : undefined;
     let recognition: CardRecognition;
     if (request.query) {
       recognition = manualRecognition(request.query, request.category);
     } else {
+      const imageDataUrl = request.imageDataUrl;
+      if (!imageDataUrl) {
+        throw new ApplicationError(
+          400,
+          "invalid_request",
+          "A vision lookup requires a card image",
+        );
+      }
       const recognitionStartedAt = performance.now();
       try {
         recognition = await this.recognitionProvider.recognize({
-          imageDataUrl: request.imageDataUrl,
+          imageDataUrl,
           categoryHint: request.category,
           signal: context.signal,
         });
@@ -897,7 +907,7 @@ export class StatelessCardLookupService implements CardLookupHandler {
       });
     }
     return CardLookupResultSchema.parse({
-      contentSha256: image.contentSha256,
+      contentSha256: image?.contentSha256 ?? null,
       imageRetained: false,
       recognition,
       candidates: catalog.candidates,
