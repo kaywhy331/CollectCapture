@@ -7,7 +7,7 @@ param(
   [switch]$ConfigureOnly,
   [string]$Provider = "",
   [string]$InstallRoot = "",
-  [string]$RepositoryRef = "agent/collectcapture-card-lookup"
+  [string]$RepositoryRef = "main"
 )
 
 $ErrorActionPreference = "Stop"
