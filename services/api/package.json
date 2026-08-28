@@ -32,9 +32,9 @@
     "@opentelemetry/sdk-metrics": "^2.10.0",
     "@opentelemetry/sdk-node": "^0.221.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
-    "@supabase/supabase-js": "2.112.3",
+    "@supabase/supabase-js": "2.112.4",
     "fastify": "^5.12.1",
-    "jose": "^6.2.9",
+    "jose": "^6.2.10",
     "openai": "7.5.0",
     "postgres": "^3.4.9",
     "zod": "^4.4.3"
