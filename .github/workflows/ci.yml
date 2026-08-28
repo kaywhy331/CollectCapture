@@ -129,7 +129,7 @@ jobs:
           java-version: "17"
 
       - name: Set up Android SDK command-line tools
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           cmdline-tools-version: "12266719"
 
