@@ -22,10 +22,10 @@
   },
   "dependencies": {
     "@localclear/domain": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0",
+    "@types/node": "^26.4.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }
